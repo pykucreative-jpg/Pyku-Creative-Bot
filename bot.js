@@ -9,6 +9,7 @@ const CAR_OWNER_ID = '317932984663539723';
 const SUPPORT_ROLE_ID = '1562454115206955059';
 const VERIFY_ROLE_ID = '1562457525868040192';
 const VERIFY_CHANNEL_ID = '1562457528829214760';
+const WELCOME_CHANNEL_ID = '1562442549099110560';
 const VERIFY_BUTTON_ID = 'fivemshop_accept_rules_v1';
 let verificationMessageId;
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
@@ -182,6 +183,44 @@ async function verificationRole(guild) {
   }
   return role;
 }
+async function publishWelcome(guild) {
+  const channel = await guild.channels.fetch(WELCOME_CHANNEL_ID);
+  if (channel?.type !== ChannelType.GuildText) throw new Error('Nie znaleziono kanału powitania.');
+  const marker = 'FivemShop • Powitanie';
+  const payload = { embeds: [new EmbedBuilder().setColor(0xf0ae42).setTitle('👋 Witaj w FivemShop!')
+    .setDescription([
+      '**Wszystko, czego potrzebujesz, by nadać swojemu FiveM własny styl.**',
+      '',
+      '🚗 **Samochody** — sportowe, luksusowe, terenowe i tuningowane.',
+      '🔫 **Skiny do broni** — własne zdjęcia, wzory i zawieszki.',
+      '🛠️ **Mody i citizeny** — pod RP, FPS oraz wygląd gry.',
+      '👕 **Ubrania** — dla Twojej postaci, ekipy, organizacji lub firmy.',
+      '🚀 **Optymalizacja PC** — pod lepszą płynność rozgrywki.',
+      '',
+      '**📩 Pytania i zamówienia**',
+      'Kliknij przycisk pod wybraną ofertą lub napisz do bota na DM. Wybierz kategorię, a zgłoszenie trafi do odpowiedniej osoby.',
+      '',
+      '💰 Cenę, zakres i termin realizacji ustalisz z obsługą przed zamówieniem.',
+      '',
+      '**Rozgość się i znajdź coś dla siebie! 🖤**',
+    ].join('\n')).setFooter({ text: marker })] };
+  let before;
+  while (true) {
+    const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+    const existing = page.find(message => message.author.id === client.user.id
+      && message.embeds.some(embed => embed.footer?.text === marker));
+    if (existing) {
+      await existing.edit(payload);
+      console.log(`Powitanie FivemShop: wiadomość gotowa ${existing.id}`);
+      return existing;
+    }
+    if (page.size < 100) break;
+    before = page.last().id;
+  }
+  const sent = await channel.send(payload);
+  console.log(`Powitanie FivemShop: opublikowano ${sent.id}`);
+  return sent;
+}
 async function publishVerification(guild) {
   const channel = await guild.channels.fetch(VERIFY_CHANNEL_ID);
   if (channel?.type !== ChannelType.GuildText) throw new Error('Kanał weryfikacji nie jest kanałem tekstowym na tym serwerze.');
@@ -286,6 +325,8 @@ client.once(Events.ClientReady, async () => {
     }
     await guild.commands.set(commands);
     console.log(`${BRAND}: bot działa jako ${client.user.tag}`);
+    try { await publishWelcome(guild); }
+    catch (error) { console.error('Powitanie FivemShop:', error.message); }
     try {
       await verificationRole(guild);
       console.log('Weryfikacja FivemShop: uprawnienia do nadawania rangi poprawne.');
