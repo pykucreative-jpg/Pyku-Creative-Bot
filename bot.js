@@ -15,7 +15,7 @@ const DISBOARD_ID = '302050872383242240';
 const BUMP_COOLDOWN = 2 * 60 * 60 * 1000;
 const BUMP_REPEAT = 30 * 60 * 1000;
 const BUMP_MARKER = 'FivemShop • Przypomnienie /bump';
-const bumpState = { lastBump: 0, lastReminder: 0, reminders: new Set(), ready: false };
+const bumpState = { lastBump: 0, nextAt: 0, lastSignalAt: 0, successes: new Map(), lastReminder: 0, reminders: new Set(), ready: false };
 const VERIFY_BUTTON_ID = 'fivemshop_accept_rules_v1';
 let verificationMessageId;
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
@@ -122,6 +122,7 @@ function imagePayload(photos, first) {
   return { embeds, files };
 }
 const commands = [
+  new SlashCommandBuilder().setName('bumpy').setDescription('Licznik podbić DISBOARD, ranking i czas następnego podbicia'),
   withPhotos(new SlashCommandBuilder().setName('oferty').setDescription('Oferty samochodów — komenda opiekuna aut')
     .addStringOption(o => o.setName('nazwa').setDescription('Nazwa samochodu').setRequired(true).setMaxLength(150))
     .addStringOption(o => o.setName('opis').setDescription('Opis auta').setRequired(true).setMaxLength(3000))
@@ -156,6 +157,31 @@ function isSuccessfulBump(message) {
   const text = [message.content, ...message.embeds.flatMap(embed => [embed.title, embed.description])].filter(Boolean).join('\n');
   return /podbi(?:to|łeś) serwer|bump done|server bumped/i.test(text);
 }
+function bumpWaitMs(message) {
+  if (message.channelId !== BUMP_CHANNEL_ID || message.author?.id !== DISBOARD_ID) return null;
+  const text = [message.content, ...message.embeds.flatMap(embed => [embed.title, embed.description])].filter(Boolean).join('\n');
+  // Only the actual cooldown line, never the DISBOARD Pro advertisement below it.
+  const line = text.match(/(?:poczekaj jeszcze|please wait(?: another)?)\s+([^\n]+)/i)?.[1]?.split(/przed|before/i)[0];
+  if (!line) return null;
+  let duration = 0, matched = false;
+  for (const part of line.matchAll(/(\d+)\s*(godz(?:in(?:y|ę|a)?)?\.?|hours?|hrs?|h\b|min(?:ut(?:y|ę|a)?)?\.?|minutes?|mins?|m\b|sek(?:und(?:y|ę|a)?)?\.?|seconds?|secs?|s\b)/gi)) {
+    matched = true;
+    const unit = part[2].toLowerCase();
+    duration += Number(part[1]) * (/^(godz|hour|hr|h$)/.test(unit) ? 3_600_000 : /^(min|m$)/.test(unit) ? 60_000 : 1000);
+  }
+  return matched ? duration : null;
+}
+function bumpStatsEmbed() {
+  const ranking = new Map();
+  for (const record of bumpState.successes.values()) if (record.userId) ranking.set(record.userId, (ranking.get(record.userId) ?? 0) + 1);
+  const top = [...ranking].sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const unknown = [...bumpState.successes.values()].filter(record => !record.userId).length;
+  return new EmbedBuilder().setColor(0xf0ae42).setTitle('📊 FivemShop • Podbicia DISBOARD')
+    .addFields({ name: '✅ Udane podbicia', value: `**${bumpState.successes.size}**`, inline: true },
+      { name: '⏱️ Następne podbicie', value: bumpState.nextAt > Date.now() ? `<t:${Math.ceil(bumpState.nextAt / 1000)}:R>` : 'Można spróbować teraz', inline: true },
+      { name: '🏆 Ranking', value: top.length ? top.map(([id, count], i) => `**${i + 1}.** <@${id}> — **${count}**`).join('\n') : 'Brak rozpoznanych autorów podbić.' })
+    .setFooter({ text: `Na podstawie dostępnej historii kanału${unknown ? ` • Bez rozpoznanego autora: ${unknown}` : ''}` });
+}
 function isBumpReminder(message) {
   return message.author?.id === client.user.id && message.embeds.some(embed => embed.footer?.text === BUMP_MARKER);
 }
@@ -167,7 +193,7 @@ async function checkBumpReminder(guild) {
     while (true) {
       const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
       for (const message of page.values()) {
-        if (isSuccessfulBump(message)) bumpState.lastBump = Math.max(bumpState.lastBump, message.createdTimestamp);
+        observeBump(message, false);
         if (isBumpReminder(message)) {
           bumpState.reminders.add(message.id);
           bumpState.lastReminder = Math.max(bumpState.lastReminder, message.createdTimestamp);
@@ -180,7 +206,7 @@ async function checkBumpReminder(guild) {
     console.log(`Bump FivemShop: odczytano historię; ostatni bump ${bumpState.lastBump || 'brak'}.`);
   }
   const now = Date.now();
-  if (now < bumpState.lastBump + BUMP_COOLDOWN || now < bumpState.lastReminder + BUMP_REPEAT) return;
+  if (now < bumpState.nextAt || now < bumpState.lastReminder + BUMP_REPEAT) return;
   for (const id of bumpState.reminders) {
     try {
       const previous = await channel.messages.fetch(id);
@@ -191,7 +217,7 @@ async function checkBumpReminder(guild) {
   const sent = await channel.send({
     content: `<@${OWNER_ID}> <@${CAR_OWNER_ID}>`,
     embeds: [new EmbedBuilder().setColor(0xf0ae42).setTitle('🔔 Czas na /bump!')
-      .setDescription('Podbijcie **FivemShop** na DISBOARD!\nWpiszcie na tym kanale **/bump** i wybierzcie komendę bota **DISBOARD**.\n\nWystarczy, że zrobi to jedna osoba. Po potwierdzeniu podbicia kolejne przypomnienie pojawi się za 2 godziny.')
+      .setDescription(`Podbijcie **FivemShop** na DISBOARD!\nWpiszcie na tym kanale **/bump** i wybierzcie komendę bota **DISBOARD**.\n\nWystarczy, że zrobi to jedna osoba. Czas kolejnego przypomnienia dostosuję do odpowiedzi DISBOARD.\n\n✅ Udane podbicia: **${bumpState.successes.size}** • Ranking: **/bumpy**`)
       .setFooter({ text: BUMP_MARKER })],
     allowedMentions: { parse: [], users: [OWNER_ID, CAR_OWNER_ID] },
   });
@@ -199,10 +225,22 @@ async function checkBumpReminder(guild) {
   bumpState.lastReminder = sent.createdTimestamp;
   console.log(`Bump FivemShop: przypomnienie wysłane ${sent.id}; oznaczono obu opiekunów.`);
 }
-function observeBump(message) {
-  if (!isSuccessfulBump(message)) return;
-  bumpState.lastBump = Math.max(bumpState.lastBump, message.createdTimestamp);
-  console.log(`Bump FivemShop: potwierdzone podbicie ${message.id}.`);
+function observeBump(message, log = true) {
+  if (message.channelId !== BUMP_CHANNEL_ID || message.author?.id !== DISBOARD_ID) return;
+  const success = isSuccessfulBump(message);
+  const wait = success ? null : bumpWaitMs(message);
+  if (!success && wait === null) return;
+  const timestamp = message.editedTimestamp ?? message.createdTimestamp;
+  if (success) {
+    const userId = message.interactionMetadata?.user?.id ?? message.interaction?.user?.id ?? message.mentions?.users?.first()?.id ?? bumpState.successes.get(message.id)?.userId;
+    bumpState.successes.set(message.id, { userId, timestamp: message.createdTimestamp });
+    bumpState.lastBump = Math.max(bumpState.lastBump, message.createdTimestamp);
+  }
+  if (timestamp >= bumpState.lastSignalAt) {
+    bumpState.lastSignalAt = timestamp;
+    bumpState.nextAt = timestamp + (success ? BUMP_COOLDOWN : wait + 5000);
+  }
+  if (log) console.log(`Bump FivemShop: ${success ? `udane podbicie; razem ${bumpState.successes.size}` : `czas oczekiwania ${Math.ceil(wait / 60000)} min`} • ${message.id}.`);
 }
 function verificationPanel(count) {
   return {
@@ -548,6 +586,10 @@ client.on(Events.InteractionCreate, async interaction => {
       return await interaction.editReply('Wysłałem Ci DM. Wybierz kategorię sprawy, aby otworzyć zgłoszenie.');
     }
     if (interaction.guildId !== GUILD_ID) return await interaction.editReply('Ta komenda działa wyłącznie na serwerze P.Y.K.U CREATIVE.');
+    if (interaction.commandName === 'bumpy') {
+      await serial('bump', () => checkBumpReminder(interaction.guild));
+      return await interaction.editReply({ embeds: [bumpStatsEmbed()], allowedMentions: { parse: [] } });
+    }
     if (!await canOperate(interaction.user.id, interaction.guild)) return await interaction.editReply('Komendy są dostępne dla właściciela i rangi obsługi P.Y.K.U CREATIVE.');
     if (interaction.commandName === 'oferty' && interaction.user.id !== CAR_OWNER_ID) return await interaction.editReply('Komenda /oferty jest przypisana opiekunowi samochodów 317932984663539723.');
     if (interaction.commandName === 'oferta' && interaction.user.id === CAR_OWNER_ID) return await interaction.editReply('Do publikacji samochodów użyj /oferty.');
