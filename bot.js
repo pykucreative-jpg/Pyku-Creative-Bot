@@ -9,7 +9,7 @@ const CAR_OWNER_ID = '317932984663539723';
 const SUPPORT_ROLE_ID = '1562454115206955059';
 const VERIFY_ROLE_ID = '1562457525868040192';
 const VERIFY_CHANNEL_ID = '1562457528829214760';
-const VERIFY_BUTTON_ID = 'fivemshop_verify';
+const VERIFY_BUTTON_ID = 'fivemshop_accept_rules_v1';
 let verificationMessageId;
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
 if (![DISCORD_TOKEN, GUILD_ID].every(Boolean)) {
@@ -147,10 +147,30 @@ async function guildAndChannels() {
 function verificationPanel(count) {
   return {
     embeds: [new EmbedBuilder().setColor(0x2ecc71).setTitle('✅ Weryfikacja • FivemShop')
-      .setDescription('Witaj w **FivemShop**! Kliknij **Zweryfikuj**, aby odblokować dostęp do oferty, katalogu aut i rozmów na serwerze.\n\n🔒 Prywatne tickety są widoczne wyłącznie dla autora i obsługi.')
+      .setDescription([
+        'Witaj! Przeczytaj regulamin i zaakceptuj go, aby uzyskać dostęp do serwera.',
+        '',
+        '**📜 REGULAMIN FivemShop**',
+        '',
+        '**1. 🤝 Szacunek** — bez wyzwisk, gróźb, dyskryminacji i prowokacji.',
+        '',
+        '**2. 💬 Porządek** — bez spamu, reklam bez zgody i zbędnego oznaczania obsługi.',
+        '',
+        '**3. 🛒 Zamówienia** — przez DM do bota. Cenę, zakres i termin ustalamy przed realizacją.',
+        '',
+        '**4. 🚗 Obsługa** — samochody: <@317932984663539723>. Pozostałe usługi: <@795755381744861184> i uprawniona obsługa.',
+        '',
+        '**5. 🔒 Bezpieczeństwo** — nie udostępniaj cudzych danych ani szkodliwych plików. Obsługa nie prosi o hasła, tokeny ani kody logowania.',
+        '',
+        '**6. 🛠️ Problemy** — zgłaszaj w tickecie. Nie otwieraj kilku zgłoszeń w tej samej sprawie.',
+        '',
+        '**7. ⚖️ Moderacja** — naruszenia mogą skutkować ostrzeżeniem, wyciszeniem lub banem. Obowiązują też zasady Discorda.',
+        '',
+        '**Klikając poniżej, potwierdzasz zapoznanie się z regulaminem i jego akceptację.**',
+      ].join('\n'))
       .addFields({ name: '👥 Zweryfikowane osoby', value: count === null ? 'Licznik chwilowo niedostępny' : `**${count}**`, inline: false })],
     components: [new ActionRowBuilder().addComponents(new ButtonBuilder()
-      .setCustomId(VERIFY_BUTTON_ID).setLabel('Zweryfikuj').setEmoji('✅').setStyle(ButtonStyle.Success))],
+      .setCustomId(VERIFY_BUTTON_ID).setLabel('Akceptuję regulamin i weryfikuję się').setEmoji('✅').setStyle(ButtonStyle.Success))],
   };
 }
 async function verificationRole(guild) {
@@ -185,7 +205,7 @@ async function publishVerification(guild) {
   while (true) {
     const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
     const existing = page.find(message => message.author.id === client.user.id && message.components.some(row =>
-      row.components.some(component => component.customId === VERIFY_BUTTON_ID)));
+      row.components.some(component => [VERIFY_BUTTON_ID, 'fivemshop_verify'].includes(component.customId))));
     if (existing) {
       await existing.edit(payload);
       verificationMessageId = existing.id;
@@ -334,6 +354,7 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (interaction.isButton()) {
+      if (interaction.customId === 'fivemshop_verify') return await interaction.editReply('Panel został zaktualizowany. Przeczytaj regulamin w aktualnym panelu i kliknij „Akceptuję regulamin i weryfikuję się”.');
       if (interaction.customId.startsWith('reason:')) {
         if (interaction.guildId || interaction.message.author.id !== client.user.id) return await interaction.editReply('Wybierz sprawę w prywatnej rozmowie z botem.');
         const [, reasonId, messageId] = interaction.customId.split(':');
@@ -360,10 +381,10 @@ client.on(Events.InteractionCreate, async interaction => {
         if (member.roles.cache.has(VERIFY_ROLE_ID)) return await interaction.editReply('✅ Masz już rangę weryfikacji i dostęp do FivemShop.');
         try {
           const role = await verificationRole(interaction.guild);
-          await member.roles.add(role, 'Weryfikacja FivemShop — kliknięcie Zweryfikuj');
+          await member.roles.add(role, 'FivemShop — akceptacja regulaminu v1 i weryfikacja');
           await serial('verification', () => publishVerification(interaction.guild))
             .catch(error => console.error('Weryfikacja FivemShop — aktualizacja licznika:', error.message));
-          return await interaction.editReply('✅ Weryfikacja zakończona! Masz już dostęp do FivemShop.');
+          return await interaction.editReply('✅ Regulamin zaakceptowany. Weryfikacja zakończona! Masz już dostęp do FivemShop.');
         } catch (error) {
           console.error('Weryfikacja FivemShop — nadanie rangi:', error.message);
           return await interaction.editReply('Nie udało się nadać rangi. Powiadom obsługę: bot musi mieć Zarządzanie rolami i swoją rangę nad rangą weryfikacji.');
