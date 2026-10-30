@@ -9,6 +9,7 @@ const SUPPORT_ROLE_ID = '1562454115206955059';
 const VERIFY_ROLE_ID = '1562457525868040192';
 const VERIFY_CHANNEL_ID = '1562457528829214760';
 const VERIFY_BUTTON_ID = 'fivemshop_verify';
+let verificationMessageId;
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
 if (![DISCORD_TOKEN, GUILD_ID].every(Boolean)) {
   throw new Error('Uzupełnij DISCORD_TOKEN i GUILD_ID w pliku .env.');
@@ -113,10 +114,11 @@ async function guildAndChannels() {
   const guild = await client.guilds.fetch(GUILD_ID);
   return { guild, channels: await guild.channels.fetch() };
 }
-function verificationPanel() {
+function verificationPanel(count) {
   return {
     embeds: [new EmbedBuilder().setColor(0x2ecc71).setTitle('✅ Weryfikacja • FivemShop')
-      .setDescription('Witaj w **FivemShop**! Kliknij **Zweryfikuj**, aby odblokować dostęp do oferty, katalogu aut i rozmów na serwerze.\n\n🔒 Prywatne tickety są widoczne wyłącznie dla autora i obsługi.')],
+      .setDescription('Witaj w **FivemShop**! Kliknij **Zweryfikuj**, aby odblokować dostęp do oferty, katalogu aut i rozmów na serwerze.\n\n🔒 Prywatne tickety są widoczne wyłącznie dla autora i obsługi.')
+      .addFields({ name: '👥 Zweryfikowane osoby', value: count === null ? 'Licznik chwilowo niedostępny' : `**${count}**`, inline: false })],
     components: [new ActionRowBuilder().addComponents(new ButtonBuilder()
       .setCustomId(VERIFY_BUTTON_ID).setLabel('Zweryfikuj').setEmoji('✅').setStyle(ButtonStyle.Success))],
   };
@@ -133,6 +135,21 @@ async function verificationRole(guild) {
 async function publishVerification(guild) {
   const channel = await guild.channels.fetch(VERIFY_CHANNEL_ID);
   if (channel?.type !== ChannelType.GuildText) throw new Error('Kanał weryfikacji nie jest kanałem tekstowym na tym serwerze.');
+  let count = null;
+  try {
+    const counts = await client.rest.get(`/guilds/${guild.id}/roles/member-counts`);
+    count = counts[VERIFY_ROLE_ID] ?? 0;
+    if (!Number.isInteger(count) || count < 0) throw new Error('Nieprawidłowy wynik licznika rangi.');
+  } catch (error) { count = null; console.error('Weryfikacja FivemShop — licznik:', error.message); }
+  const payload = verificationPanel(count);
+  if (verificationMessageId) {
+    const existing = await channel.messages.fetch(verificationMessageId).catch(() => null);
+    if (existing) {
+      await existing.edit(payload);
+      return existing;
+    }
+    verificationMessageId = undefined;
+  }
   // Search the channel history so a restart never creates another panel.
   let before;
   while (true) {
@@ -140,14 +157,17 @@ async function publishVerification(guild) {
     const existing = page.find(message => message.author.id === client.user.id && message.components.some(row =>
       row.components.some(component => component.customId === VERIFY_BUTTON_ID)));
     if (existing) {
-      await existing.edit(verificationPanel());
+      await existing.edit(payload);
+      verificationMessageId = existing.id;
+      console.log(`Weryfikacja FivemShop: licznik ${count ?? 'niedostępny'}`);
       console.log(`Weryfikacja FivemShop: panel gotowy ${existing.id}`);
       return existing;
     }
     if (page.size < 100) break;
     before = page.last().id;
   }
-  const sent = await channel.send(verificationPanel());
+  const sent = await channel.send(payload);
+  verificationMessageId = sent.id;
   console.log(`Weryfikacja FivemShop: panel opublikowany ${sent.id}`);
   return sent;
 }
@@ -202,6 +222,8 @@ client.once(Events.ClientReady, async () => {
     } catch (error) { console.error('Weryfikacja FivemShop — uprawnienia:', error.message); }
     try { await publishVerification(guild); }
     catch (error) { console.error('Weryfikacja FivemShop — publikacja:', error.message); }
+    setInterval(() => serial('verification', () => publishVerification(guild))
+      .catch(error => console.error('Weryfikacja FivemShop — odświeżenie licznika:', error.message)), 60_000).unref();
   } catch (error) { console.error('Nie udało się uruchomić konfiguracji:', error.message); client.destroy(); process.exitCode = 1; }
 });
 
@@ -265,6 +287,8 @@ client.on(Events.InteractionCreate, async interaction => {
         try {
           const role = await verificationRole(interaction.guild);
           await member.roles.add(role, 'Weryfikacja FivemShop — kliknięcie Zweryfikuj');
+          await serial('verification', () => publishVerification(interaction.guild))
+            .catch(error => console.error('Weryfikacja FivemShop — aktualizacja licznika:', error.message));
           return await interaction.editReply('✅ Weryfikacja zakończona! Masz już dostęp do FivemShop.');
         } catch (error) {
           console.error('Weryfikacja FivemShop — nadanie rangi:', error.message);
