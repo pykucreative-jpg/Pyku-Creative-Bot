@@ -10,6 +10,12 @@ const SUPPORT_ROLE_ID = '1562454115206955059';
 const VERIFY_ROLE_ID = '1562457525868040192';
 const VERIFY_CHANNEL_ID = '1562457528829214760';
 const WELCOME_CHANNEL_ID = '1562442549099110560';
+const BUMP_CHANNEL_ID = '1565758802970546206';
+const DISBOARD_ID = '302050872383242240';
+const BUMP_COOLDOWN = 2 * 60 * 60 * 1000;
+const BUMP_REPEAT = 30 * 60 * 1000;
+const BUMP_MARKER = 'FivemShop • Przypomnienie /bump';
+const bumpState = { lastBump: 0, lastReminder: 0, reminders: new Set(), ready: false };
 const VERIFY_BUTTON_ID = 'fivemshop_accept_rules_v1';
 let verificationMessageId;
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
@@ -144,6 +150,59 @@ const commands = [
 async function guildAndChannels() {
   const guild = await client.guilds.fetch(GUILD_ID);
   return { guild, channels: await guild.channels.fetch() };
+}
+function isSuccessfulBump(message) {
+  if (message.channelId !== BUMP_CHANNEL_ID || message.author?.id !== DISBOARD_ID) return false;
+  const text = [message.content, ...message.embeds.flatMap(embed => [embed.title, embed.description])].filter(Boolean).join('\n');
+  return /podbi(?:to|łeś) serwer|bump done|server bumped/i.test(text);
+}
+function isBumpReminder(message) {
+  return message.author?.id === client.user.id && message.embeds.some(embed => embed.footer?.text === BUMP_MARKER);
+}
+async function checkBumpReminder(guild) {
+  const channel = await guild.channels.fetch(BUMP_CHANNEL_ID);
+  if (channel?.type !== ChannelType.GuildText) throw new Error('Nie znaleziono kanału przypomnień bump.');
+  if (!bumpState.ready) {
+    let before;
+    while (true) {
+      const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+      for (const message of page.values()) {
+        if (isSuccessfulBump(message)) bumpState.lastBump = Math.max(bumpState.lastBump, message.createdTimestamp);
+        if (isBumpReminder(message)) {
+          bumpState.reminders.add(message.id);
+          bumpState.lastReminder = Math.max(bumpState.lastReminder, message.createdTimestamp);
+        }
+      }
+      if (page.size < 100) break;
+      before = page.last().id;
+    }
+    bumpState.ready = true;
+    console.log(`Bump FivemShop: odczytano historię; ostatni bump ${bumpState.lastBump || 'brak'}.`);
+  }
+  const now = Date.now();
+  if (now < bumpState.lastBump + BUMP_COOLDOWN || now < bumpState.lastReminder + BUMP_REPEAT) return;
+  for (const id of bumpState.reminders) {
+    try {
+      const previous = await channel.messages.fetch(id);
+      if (isBumpReminder(previous)) await previous.delete();
+    } catch (error) { if (error.code !== 10008) throw error; }
+    bumpState.reminders.delete(id);
+  }
+  const sent = await channel.send({
+    content: `<@${OWNER_ID}> <@${CAR_OWNER_ID}>`,
+    embeds: [new EmbedBuilder().setColor(0xf0ae42).setTitle('🔔 Czas na /bump!')
+      .setDescription('Podbijcie **FivemShop** na DISBOARD!\nWpiszcie na tym kanale **/bump** i wybierzcie komendę bota **DISBOARD**.\n\nWystarczy, że zrobi to jedna osoba. Po potwierdzeniu podbicia kolejne przypomnienie pojawi się za 2 godziny.')
+      .setFooter({ text: BUMP_MARKER })],
+    allowedMentions: { parse: [], users: [OWNER_ID, CAR_OWNER_ID] },
+  });
+  bumpState.reminders.add(sent.id);
+  bumpState.lastReminder = sent.createdTimestamp;
+  console.log(`Bump FivemShop: przypomnienie wysłane ${sent.id}; oznaczono obu opiekunów.`);
+}
+function observeBump(message) {
+  if (!isSuccessfulBump(message)) return;
+  bumpState.lastBump = Math.max(bumpState.lastBump, message.createdTimestamp);
+  console.log(`Bump FivemShop: potwierdzone podbicie ${message.id}.`);
 }
 function verificationPanel(count) {
   return {
@@ -325,6 +384,10 @@ client.once(Events.ClientReady, async () => {
     }
     await guild.commands.set(commands);
     console.log(`${BRAND}: bot działa jako ${client.user.tag}`);
+    try { await serial('bump', () => checkBumpReminder(guild)); }
+    catch (error) { console.error('Bump FivemShop:', error.message); }
+    setInterval(() => serial('bump', () => checkBumpReminder(guild))
+      .catch(error => console.error('Bump FivemShop:', error.message)), 60_000).unref();
     try { await publishWelcome(guild); }
     catch (error) { console.error('Powitanie FivemShop:', error.message); }
     try {
@@ -339,6 +402,7 @@ client.once(Events.ClientReady, async () => {
 });
 
 client.on(Events.MessageCreate, message => {
+  observeBump(message);
   if (message.author.bot || message.webhookId) return;
   if (message.guildId) {
     if (message.guildId !== GUILD_ID || !activeTicket(message.channel.topic)) return;
@@ -388,6 +452,9 @@ client.on(Events.MessageCreate, message => {
     console.error('Błąd odbioru zgłoszenia:', error.message);
     await message.reply('Nie udało się przekazać wiadomości. Spróbuj później lub skontaktuj się z administracją serwera.').catch(() => {});
   });
+});
+client.on(Events.MessageUpdate, (_old, message) => {
+  if (message.channelId === BUMP_CHANNEL_ID) observeBump(message);
 });
 
 client.on(Events.InteractionCreate, async interaction => {
