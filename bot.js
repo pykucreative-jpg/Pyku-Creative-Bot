@@ -5,6 +5,7 @@ import {
 } from 'discord.js';
 
 const OWNER_ID = '795755381744861184';
+const CAR_OWNER_ID = '317932984663539723';
 const SUPPORT_ROLE_ID = '1562454115206955059';
 const VERIFY_ROLE_ID = '1562457525868040192';
 const VERIFY_CHANNEL_ID = '1562457528829214760';
@@ -22,6 +23,7 @@ const client = new Client({
 const BRAND = 'P.Y.K.U CREATIVE';
 const CATEGORY = 'PYKU • ZGŁOSZENIA';
 const OFFER_CATEGORY = 'PYKU • TICKETY Z OFERT';
+const CAR_CATEGORY = 'FivemShop • SAMOCHODY';
 const DM_REASONS = [
   { id: '1', key: 'samochody', label: 'Samochody', emoji: '🚗' },
   { id: '2', key: 'skiny', label: 'Skiny do broni', emoji: '🔫' },
@@ -30,8 +32,9 @@ const DM_REASONS = [
   { id: '5', key: 'optymalizacja', label: 'Optymalizacja PC', emoji: '🚀' },
   { id: '6', key: 'ubrania', label: 'Ubrania', emoji: '👕' },
 ];
-const activeTopic = (id, offerId, reason) => offerId ? `pyku:offer:${id}:${offerId}` : `pyku:open:${id}${reason ? `:${reason.id}` : ''}`;
-const activeTicket = topic => /^pyku:(open|offer):(\d+)(?::(\d+))?$/.exec(topic ?? '');
+const activeTopic = (id, offerId, reason, carOffer = false) => offerId ? `pyku:offer:${id}:${offerId}${carOffer ? ':car' : ''}` : `pyku:open:${id}${reason ? `:${reason.id}` : ''}`;
+const activeTicket = topic => /^pyku:(open|offer):(\d+)(?::(\d+))?(?::(car))?$/.exec(topic ?? '');
+const isCarTicket = topic => /^pyku:(open|closed):\d+:1$/.test(topic ?? '') || /^pyku:(offer|closedoffer):\d+:\d+:car$/.test(topic ?? '');
 const ticketLabel = match => match[1] === 'offer' ? `Oferta ${match[3].slice(-6)}` : DM_REASONS.find(reason => reason.id === match[3])?.label ?? 'Usługi';
 function reasonMenu(messageId = 'new') {
   return {
@@ -92,9 +95,14 @@ const contactButton = (reference = 'offer_contact', cars = false) => new ActionR
   new ButtonBuilder().setCustomId(reference).setLabel(cars ? 'Zapytaj o auto / zamów' : 'Zapytaj o ofertę / zamów').setEmoji('📩').setStyle(ButtonStyle.Primary),
 );
 async function canOperate(userId, guild) {
-  if (userId === OWNER_ID) return true;
+  if (userId === OWNER_ID || userId === CAR_OWNER_ID) return true;
   const member = await guild.members.fetch(userId);
   return member.roles.cache.has(SUPPORT_ROLE_ID);
+}
+async function canHandleTicket(userId, guild, topic) {
+  if (isCarTicket(topic)) return userId === CAR_OWNER_ID;
+  if (userId === CAR_OWNER_ID) return false;
+  return canOperate(userId, guild);
 }
 function imagePayload(photos, first) {
   const embeds = [first];
@@ -107,6 +115,11 @@ function imagePayload(photos, first) {
   return { embeds, files };
 }
 const commands = [
+  withPhotos(new SlashCommandBuilder().setName('oferty').setDescription('Oferty samochodów — komenda opiekuna aut')
+    .addStringOption(o => o.setName('nazwa').setDescription('Nazwa samochodu').setRequired(true).setMaxLength(150))
+    .addStringOption(o => o.setName('opis').setDescription('Opis auta').setRequired(true).setMaxLength(3000))
+    .addStringOption(o => o.setName('cena').setDescription('Cena z walutą').setRequired(true).setMaxLength(150)))
+    .addChannelOption(o => o.setName('kanal').setDescription('Istniejący kanał ofert samochodów').addChannelTypes(ChannelType.GuildText)),
   new SlashCommandBuilder().setName('weryfikacja').setDescription('Opublikuj lub odśwież panel weryfikacji FivemShop'),
   withPhotos(new SlashCommandBuilder().setName('oferta').setDescription('Opublikuj ofertę z opisem, ceną i galerią')
     .addStringOption(o => o.setName('nazwa').setDescription('Nazwa oferty').setRequired(true).setMinLength(1).setMaxLength(150))
@@ -188,27 +201,28 @@ async function publishVerification(guild) {
   console.log(`Weryfikacja FivemShop: panel opublikowany ${sent.id}`);
   return sent;
 }
-function privateOverwrites(guild) {
+function privateOverwrites(guild, cars = false) {
   return [
     { id: guild.id, deny: [P.ViewChannel] },
-    { id: OWNER_ID, type: 1, allow: [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.AttachFiles, P.UseApplicationCommands] },
-    { id: SUPPORT_ROLE_ID, type: 0, allow: [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.AttachFiles, P.UseApplicationCommands] },
+    { id: cars ? CAR_OWNER_ID : OWNER_ID, type: 1, allow: [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.AttachFiles, P.UseApplicationCommands] },
+    ...(cars ? [] : [{ id: SUPPORT_ROLE_ID, type: 0, allow: [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.AttachFiles, P.UseApplicationCommands] }]),
     { id: client.user.id, type: 1, allow: [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.ManageChannels, P.AttachFiles, P.EmbedLinks] },
   ];
 }
-async function ticket(user, offerId, reason) {
+async function ticket(user, offerId, reason, carOffer = false) {
   const { guild, channels } = await guildAndChannels();
-  const existing = channels.find(c => c?.type === ChannelType.GuildText && c.topic === activeTopic(user.id, offerId, reason));
+  const existing = channels.find(c => c?.type === ChannelType.GuildText && c.topic === activeTopic(user.id, offerId, reason, carOffer));
   if (existing) return existing;
-  const overwrites = privateOverwrites(guild);
-  const categoryName = offerId || reason?.key === 'samochody' ? OFFER_CATEGORY : CATEGORY;
+  const cars = carOffer || reason?.key === 'samochody';
+  const overwrites = privateOverwrites(guild, cars);
+  const categoryName = cars ? CAR_CATEGORY : offerId ? OFFER_CATEGORY : CATEGORY;
   let category = channels.find(c => c?.type === ChannelType.GuildCategory && c.name === categoryName);
   if (!category) category = await guild.channels.create({ name: categoryName, type: ChannelType.GuildCategory, permissionOverwrites: overwrites });
   const channel = await guild.channels.create({
     name: `${offerId ? 'oferta' : reason?.key ?? 'uslugi'}-${user.id}${offerId ? `-${offerId.slice(-6)}` : ''}`, type: ChannelType.GuildText, parent: category.id,
-    topic: activeTopic(user.id, offerId, reason), permissionOverwrites: overwrites,
+    topic: activeTopic(user.id, offerId, reason, carOffer), permissionOverwrites: overwrites,
   });
-  await channel.send(`Nowe zgłoszenie: ${user.username} (${user.id}).${reason ? `\nSprawa: **${reason.label}**` : ''}\nWiadomości i załączniki obsługi na tym kanale automatycznie trafiają klientowi na DM.\n/zamknij kończy rozmowę i zachowuje archiwum.`);
+  await channel.send(`Nowe zgłoszenie: ${user.username} (${user.id}).${reason ? `\nSprawa: **${reason.label}**` : ''}\nOpiekun: ${cars ? CAR_OWNER_ID : OWNER_ID}\nWiadomości i załączniki obsługi na tym kanale automatycznie trafiają klientowi na DM.\n/zamknij kończy rozmowę i zachowuje archiwum.`);
   return channel;
 }
 async function forwardCustomer(message, channel) {
@@ -226,9 +240,28 @@ client.once(Events.ClientReady, async () => {
     await guild.members.fetch(OWNER_ID);
     const channels = await guild.channels.fetch();
     for (const channel of channels.values()) {
-      if (channel && ((channel.type === ChannelType.GuildCategory && [CATEGORY, OFFER_CATEGORY].includes(channel.name))
-        || (channel.type === ChannelType.GuildText && /^pyku:(open|offer|closed|closedoffer):\d+(?::\d+)?$/.test(channel.topic ?? '')))) {
-        await channel.permissionOverwrites.set(privateOverwrites(guild));
+      if (channel && ((channel.type === ChannelType.GuildCategory && [CATEGORY, OFFER_CATEGORY, CAR_CATEGORY].includes(channel.name))
+        || (channel.type === ChannelType.GuildText && /^pyku:(open|offer|closed|closedoffer):\d+(?::\d+)?(?::car)?$/.test(channel.topic ?? '')))) {
+        // Identify older offer tickets from their original offer link before applying access.
+        if (/^pyku:(offer|closedoffer):\d+:\d+$/.test(channel.topic ?? '')) {
+          try {
+            const history = await channel.messages.fetch({ limit: 100 });
+            const notice = history.find(message => message.author.id === client.user.id && message.embeds.some(embed => embed.title === '📩 Zapytanie o ofertę'));
+            const link = notice?.embeds[0]?.description?.match(/https:\/\/discord.com\/channels\/\d+\/(\d+)\/(\d+)/);
+            if (link) {
+              const sourceChannel = await guild.channels.fetch(link[1]);
+              const source = await sourceChannel.messages.fetch(link[2]);
+              if (source.author.id === client.user.id && source.embeds[0]?.footer?.text.includes('Auta FiveM')) await channel.setTopic(`${channel.topic}:car`);
+            }
+          } catch (error) { console.error('Migracja zgłoszenia oferty:', channel.id, error.message); }
+        }
+        const cars = channel.name === CAR_CATEGORY || isCarTicket(channel.topic);
+        await channel.permissionOverwrites.set(privateOverwrites(guild, cars));
+        if (cars && channel.type === ChannelType.GuildText) {
+          let parent = (await guild.channels.fetch()).find(item => item?.type === ChannelType.GuildCategory && item.name === CAR_CATEGORY);
+          if (!parent) parent = await guild.channels.create({ name: CAR_CATEGORY, type: ChannelType.GuildCategory, permissionOverwrites: privateOverwrites(guild, true) });
+          if (channel.parentId !== parent.id) await channel.setParent(parent.id, { lockPermissions: false });
+        }
       }
     }
     await guild.commands.set(commands);
@@ -249,8 +282,8 @@ client.on(Events.MessageCreate, message => {
   if (message.guildId) {
     if (message.guildId !== GUILD_ID || !activeTicket(message.channel.topic)) return;
     serial('tickets', async () => {
-      if (!await canOperate(message.author.id, message.guild)) return;
       const channel = await message.guild.channels.fetch(message.channelId);
+      if (!await canHandleTicket(message.author.id, message.guild, channel?.topic)) return;
       const match = activeTicket(channel?.topic);
       if (!match) return;
       if (!message.content && !message.attachments.size) return;
@@ -366,7 +399,7 @@ client.on(Events.InteractionCreate, async interaction => {
           await interaction.user.send({ content: `**${BRAND} — ${title}**\nCena: ${price}\n${source.url}\n\nTwoje zapytanie trafi do obsługi. Napisz tutaj, co chcesz zamówić lub o co zapytać.`, allowedMentions: { parse: [] } });
         } catch { return await interaction.editReply('Włącz DM od członków serwera i kliknij ponownie.'); }
         await serial('tickets', async () => {
-          const channel = await ticket(interaction.user, source.id);
+          const channel = await ticket(interaction.user, source.id, undefined, source.embeds[0]?.footer?.text.includes('Auta FiveM'));
           await channel.send({ embeds: [new EmbedBuilder().setColor(0xa855f7).setTitle('📩 Zapytanie o ofertę')
             .setDescription(`Klient: ${interaction.user.username}\n**${title}**\nCena: ${price}\n${source.url}`)] });
         });
@@ -387,18 +420,22 @@ client.on(Events.InteractionCreate, async interaction => {
     }
     if (interaction.guildId !== GUILD_ID) return await interaction.editReply('Ta komenda działa wyłącznie na serwerze P.Y.K.U CREATIVE.');
     if (!await canOperate(interaction.user.id, interaction.guild)) return await interaction.editReply('Komendy są dostępne dla właściciela i rangi obsługi P.Y.K.U CREATIVE.');
+    if (interaction.commandName === 'oferty' && interaction.user.id !== CAR_OWNER_ID) return await interaction.editReply('Komenda /oferty jest przypisana opiekunowi samochodów 317932984663539723.');
+    if (interaction.commandName === 'oferta' && interaction.user.id === CAR_OWNER_ID) return await interaction.editReply('Do publikacji samochodów użyj /oferty.');
+    if (interaction.user.id === CAR_OWNER_ID && ['panel', 'weryfikacja'].includes(interaction.commandName)) return await interaction.editReply('Twoja obsługa obejmuje oferty i tickety samochodów.');
     if (interaction.commandName === 'weryfikacja') {
       const panel = await serial('verification', () => publishVerification(interaction.guild));
       return await interaction.editReply(`Panel weryfikacji gotowy: ${panel.url}`);
     }
-    if (interaction.commandName === 'oferta') {
+    if (['oferta', 'oferty'].includes(interaction.commandName)) {
       const destination = interaction.options.getChannel('kanal') ?? interaction.channel;
       if (destination.type !== ChannelType.GuildText) return await interaction.editReply('Wybierz zwykły kanał tekstowy w polu kanal.');
       if (!destination.permissionsFor(interaction.member)?.has([P.ViewChannel, P.SendMessages])) return await interaction.editReply('Nie masz uprawnień do publikacji na tym kanale.');
       const name = interaction.options.getString('nazwa').trim();
       const description = interaction.options.getString('opis').trim().replaceAll('\\n', '\n');
       const price = interaction.options.getString('cena').trim();
-      const cars = interaction.options.getString('dzial') === 'auta';
+      const cars = interaction.commandName === 'oferty' || interaction.options.getString('dzial') === 'auta';
+      if (interaction.user.id === CAR_OWNER_ID && !cars) return await interaction.editReply('Możesz publikować wyłącznie oferty samochodów. Wybierz dział auta.');
       if (!name || !description || !price) return await interaction.editReply('Nazwa, opis i cena nie mogą być puste.');
       let photos;
       try { photos = photosFrom(interaction); } catch (error) { return await interaction.editReply(error.message); }
@@ -413,6 +450,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const id = interaction.options.getString('oferta_id').trim();
       if (!/^\d+$/.test(id)) return await interaction.editReply('Podaj ID wiadomości oferty.');
       const source = await interaction.channel.messages.fetch(id);
+      if (interaction.user.id === CAR_OWNER_ID && !source.embeds[0]?.footer?.text.includes('Auta FiveM')) return await interaction.editReply('Możesz dodawać zdjęcia tylko do ofert samochodów.');
       if (source.author.id !== client.user.id || !source.components.some(row => row.components.some(c => c.customId === 'offer_contact'))) return await interaction.editReply('To nie jest oferta utworzona przez /oferta na tym kanale.');
       let photos;
       try { photos = photosFrom(interaction); } catch (error) { return await interaction.editReply(error.message); }
@@ -433,6 +471,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const channel = await interaction.guild.channels.fetch(interaction.channelId);
       const match = activeTicket(channel?.topic);
       if (!match) return await interaction.editReply('Użyj tej komendy na kanale aktywnego zgłoszenia.');
+      if (!await canHandleTicket(interaction.user.id, interaction.guild, channel.topic)) return await interaction.editReply('To zgłoszenie należy do drugiego opiekuna. Samochody obsługuje 317932984663539723, a pozostałe usługi 795755381744861184.');
       const user = await client.users.fetch(match[2]);
       if (interaction.commandName === 'odpowiedz') {
         const content = interaction.options.getString('tresc');
