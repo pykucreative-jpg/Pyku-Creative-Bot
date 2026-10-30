@@ -6,6 +6,9 @@ import {
 
 const OWNER_ID = '795755381744861184';
 const SUPPORT_ROLE_ID = '1562454115206955059';
+const VERIFY_ROLE_ID = '1562457525868040192';
+const VERIFY_CHANNEL_ID = '1562457528829214760';
+const VERIFY_BUTTON_ID = 'fivemshop_verify';
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
 if (![DISCORD_TOKEN, GUILD_ID].every(Boolean)) {
   throw new Error('Uzupełnij DISCORD_TOKEN i GUILD_ID w pliku .env.');
@@ -86,6 +89,7 @@ function imagePayload(photos, first) {
   return { embeds, files };
 }
 const commands = [
+  new SlashCommandBuilder().setName('weryfikacja').setDescription('Opublikuj lub odśwież panel weryfikacji FivemShop'),
   withPhotos(new SlashCommandBuilder().setName('oferta').setDescription('Opublikuj ofertę z opisem, ceną i galerią')
     .addStringOption(o => o.setName('nazwa').setDescription('Nazwa oferty').setRequired(true).setMinLength(1).setMaxLength(150))
     .addStringOption(o => o.setName('opis').setDescription('Opis; wpisz \\n aby zacząć nową linię').setRequired(true).setMaxLength(3000))
@@ -108,6 +112,44 @@ const commands = [
 async function guildAndChannels() {
   const guild = await client.guilds.fetch(GUILD_ID);
   return { guild, channels: await guild.channels.fetch() };
+}
+function verificationPanel() {
+  return {
+    embeds: [new EmbedBuilder().setColor(0x2ecc71).setTitle('✅ Weryfikacja • FivemShop')
+      .setDescription('Witaj w **FivemShop**! Kliknij **Zweryfikuj**, aby odblokować dostęp do oferty, katalogu aut i rozmów na serwerze.\n\n🔒 Prywatne tickety są widoczne wyłącznie dla autora i obsługi.')],
+    components: [new ActionRowBuilder().addComponents(new ButtonBuilder()
+      .setCustomId(VERIFY_BUTTON_ID).setLabel('Zweryfikuj').setEmoji('✅').setStyle(ButtonStyle.Success))],
+  };
+}
+async function verificationRole(guild) {
+  const role = await guild.roles.fetch(VERIFY_ROLE_ID);
+  const me = await guild.members.fetchMe();
+  if (!role || role.managed || role.id === guild.id) throw new Error('Nie znaleziono zwykłej rangi weryfikacji.');
+  if (!me.permissions.has(P.ManageRoles) || !role.editable) {
+    throw new Error('Bot potrzebuje uprawnienia Zarządzanie rolami i swojej rangi powyżej rangi weryfikacji.');
+  }
+  return role;
+}
+async function publishVerification(guild) {
+  const channel = await guild.channels.fetch(VERIFY_CHANNEL_ID);
+  if (channel?.type !== ChannelType.GuildText) throw new Error('Kanał weryfikacji nie jest kanałem tekstowym na tym serwerze.');
+  // Search the channel history so a restart never creates another panel.
+  let before;
+  while (true) {
+    const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+    const existing = page.find(message => message.author.id === client.user.id && message.components.some(row =>
+      row.components.some(component => component.customId === VERIFY_BUTTON_ID)));
+    if (existing) {
+      await existing.edit(verificationPanel());
+      console.log(`Weryfikacja FivemShop: panel gotowy ${existing.id}`);
+      return existing;
+    }
+    if (page.size < 100) break;
+    before = page.last().id;
+  }
+  const sent = await channel.send(verificationPanel());
+  console.log(`Weryfikacja FivemShop: panel opublikowany ${sent.id}`);
+  return sent;
 }
 function privateOverwrites(guild) {
   return [
@@ -154,6 +196,12 @@ client.once(Events.ClientReady, async () => {
     }
     await guild.commands.set(commands);
     console.log(`${BRAND}: bot działa jako ${client.user.tag}`);
+    try {
+      await verificationRole(guild);
+      console.log('Weryfikacja FivemShop: uprawnienia do nadawania rangi poprawne.');
+    } catch (error) { console.error('Weryfikacja FivemShop — uprawnienia:', error.message); }
+    try { await publishVerification(guild); }
+    catch (error) { console.error('Weryfikacja FivemShop — publikacja:', error.message); }
   } catch (error) { console.error('Nie udało się uruchomić konfiguracji:', error.message); client.destroy(); process.exitCode = 1; }
 });
 
@@ -209,6 +257,20 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (interaction.isButton()) {
+      if (interaction.customId === VERIFY_BUTTON_ID) {
+        if (interaction.guildId !== GUILD_ID || interaction.channelId !== VERIFY_CHANNEL_ID
+          || interaction.message.author.id !== client.user.id) return await interaction.editReply('Ten przycisk działa tylko na kanale weryfikacji FivemShop.');
+        const member = await interaction.guild.members.fetch(interaction.user.id);
+        if (member.roles.cache.has(VERIFY_ROLE_ID)) return await interaction.editReply('✅ Masz już rangę weryfikacji i dostęp do FivemShop.');
+        try {
+          const role = await verificationRole(interaction.guild);
+          await member.roles.add(role, 'Weryfikacja FivemShop — kliknięcie Zweryfikuj');
+          return await interaction.editReply('✅ Weryfikacja zakończona! Masz już dostęp do FivemShop.');
+        } catch (error) {
+          console.error('Weryfikacja FivemShop — nadanie rangi:', error.message);
+          return await interaction.editReply('Nie udało się nadać rangi. Powiadom obsługę: bot musi mieć Zarządzanie rolami i swoją rangę nad rangą weryfikacji.');
+        }
+      }
       if (interaction.customId.startsWith('route:')) {
         const [, channelId, messageId] = interaction.customId.split(':');
         return await serial('tickets', async () => {
@@ -261,6 +323,10 @@ client.on(Events.InteractionCreate, async interaction => {
     }
     if (interaction.guildId !== GUILD_ID) return await interaction.editReply('Ta komenda działa wyłącznie na serwerze P.Y.K.U CREATIVE.');
     if (!await canOperate(interaction.user.id, interaction.guild)) return await interaction.editReply('Komendy są dostępne dla właściciela i rangi obsługi P.Y.K.U CREATIVE.');
+    if (interaction.commandName === 'weryfikacja') {
+      const panel = await serial('verification', () => publishVerification(interaction.guild));
+      return await interaction.editReply(`Panel weryfikacji gotowy: ${panel.url}`);
+    }
     if (interaction.commandName === 'oferta') {
       const destination = interaction.options.getChannel('kanal') ?? interaction.channel;
       if (destination.type !== ChannelType.GuildText) return await interaction.editReply('Wybierz zwykły kanał tekstowy w polu kanal.');
