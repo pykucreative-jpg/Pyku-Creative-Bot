@@ -22,8 +22,25 @@ const client = new Client({
 const BRAND = 'P.Y.K.U CREATIVE';
 const CATEGORY = 'PYKU • ZGŁOSZENIA';
 const OFFER_CATEGORY = 'PYKU • TICKETY Z OFERT';
-const activeTopic = (id, offerId) => offerId ? `pyku:offer:${id}:${offerId}` : `pyku:open:${id}`;
+const DM_REASONS = [
+  { id: '1', key: 'samochody', label: 'Samochody', emoji: '🚗' },
+  { id: '2', key: 'skiny', label: 'Skiny do broni', emoji: '🔫' },
+  { id: '3', key: 'mody', label: 'Mody', emoji: '🛠️' },
+  { id: '4', key: 'citizeny', label: 'Citizeny', emoji: '🎮' },
+  { id: '5', key: 'optymalizacja', label: 'Optymalizacja PC', emoji: '🚀' },
+  { id: '6', key: 'ubrania', label: 'Ubrania', emoji: '👕' },
+];
+const activeTopic = (id, offerId, reason) => offerId ? `pyku:offer:${id}:${offerId}` : `pyku:open:${id}${reason ? `:${reason.id}` : ''}`;
 const activeTicket = topic => /^pyku:(open|offer):(\d+)(?::(\d+))?$/.exec(topic ?? '');
+const ticketLabel = match => match[1] === 'offer' ? `Oferta ${match[3].slice(-6)}` : DM_REASONS.find(reason => reason.id === match[3])?.label ?? 'Usługi';
+function reasonMenu(messageId = 'new') {
+  return {
+    embeds: [new EmbedBuilder().setColor(0xf0ae42).setTitle('📩 FivemShop • W czym możemy pomóc?')
+      .setDescription('Wybierz, w jakiej sprawie piszesz. Twoja wiadomość i załączniki trafią do odpowiedniego zgłoszenia.\n\nAby później wybrać inną sprawę, napisz **menu**.')],
+    components: [0, 3].map(start => new ActionRowBuilder().addComponents(DM_REASONS.slice(start, start + 3).map(reason =>
+      new ButtonBuilder().setCustomId(`reason:${reason.id}:${messageId}`).setLabel(reason.label).setEmoji(reason.emoji).setStyle(ButtonStyle.Secondary)))),
+  };
+}
 const queues = new Map();
 function serial(key, task) {
   const next = (queues.get(key) ?? Promise.resolve()).catch(() => {}).then(task);
@@ -179,19 +196,19 @@ function privateOverwrites(guild) {
     { id: client.user.id, type: 1, allow: [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.ManageChannels, P.AttachFiles, P.EmbedLinks] },
   ];
 }
-async function ticket(user, offerId) {
+async function ticket(user, offerId, reason) {
   const { guild, channels } = await guildAndChannels();
-  const existing = channels.find(c => c?.type === ChannelType.GuildText && c.topic === activeTopic(user.id, offerId));
+  const existing = channels.find(c => c?.type === ChannelType.GuildText && c.topic === activeTopic(user.id, offerId, reason));
   if (existing) return existing;
   const overwrites = privateOverwrites(guild);
-  const categoryName = offerId ? OFFER_CATEGORY : CATEGORY;
+  const categoryName = offerId || reason?.key === 'samochody' ? OFFER_CATEGORY : CATEGORY;
   let category = channels.find(c => c?.type === ChannelType.GuildCategory && c.name === categoryName);
   if (!category) category = await guild.channels.create({ name: categoryName, type: ChannelType.GuildCategory, permissionOverwrites: overwrites });
   const channel = await guild.channels.create({
-    name: `${offerId ? 'oferta' : 'uslugi'}-${user.id}${offerId ? `-${offerId.slice(-6)}` : ''}`, type: ChannelType.GuildText, parent: category.id,
-    topic: activeTopic(user.id, offerId), permissionOverwrites: overwrites,
+    name: `${offerId ? 'oferta' : reason?.key ?? 'uslugi'}-${user.id}${offerId ? `-${offerId.slice(-6)}` : ''}`, type: ChannelType.GuildText, parent: category.id,
+    topic: activeTopic(user.id, offerId, reason), permissionOverwrites: overwrites,
   });
-  await channel.send(`Nowe zgłoszenie: ${user.username} (${user.id}).\nWiadomości i załączniki obsługi na tym kanale automatycznie trafiają klientowi na DM.\n/zamknij kończy rozmowę i zachowuje archiwum.`);
+  await channel.send(`Nowe zgłoszenie: ${user.username} (${user.id}).${reason ? `\nSprawa: **${reason.label}**` : ''}\nWiadomości i załączniki obsługi na tym kanale automatycznie trafiają klientowi na DM.\n/zamknij kończy rozmowę i zachowuje archiwum.`);
   return channel;
 }
 async function forwardCustomer(message, channel) {
@@ -238,7 +255,7 @@ client.on(Events.MessageCreate, message => {
       if (!match) return;
       if (!message.content && !message.attachments.size) return;
       const user = await client.users.fetch(match[2]);
-      const prefix = `**${BRAND} • ${match[1] === 'offer' ? `Oferta ${match[3].slice(-6)}` : 'Usługi'}**\n`;
+      const prefix = `**FivemShop • ${ticketLabel(match)}**\n`;
       const text = message.content || '(załącznik)';
       const size = 2000 - prefix.length;
       for (let offset = 0; offset < text.length; offset += size) {
@@ -257,12 +274,17 @@ client.on(Events.MessageCreate, message => {
   serial('tickets', async () => {
     const { channels } = await guildAndChannels();
     const active = [...channels.values()].filter(channel => activeTicket(channel?.topic)?.[2] === message.author.id);
+    const isMenu = /^(menu|start)$/i.test(message.content.trim());
+    if (isMenu || !active.length || (active.length === 1 && !activeTicket(active[0].topic)?.[3])) {
+      await message.reply(reasonMenu(isMenu ? 'new' : message.id));
+      return;
+    }
     if (active.length > 1) {
       const rows = [];
       for (let i = 0; i < active.length; i += 5) rows.push(new ActionRowBuilder().addComponents(active.slice(i, i + 5).map(channel =>
         new ButtonBuilder().setCustomId(`route:${channel.id}:${message.id}`).setLabel(channel.name.slice(0, 80)).setStyle(ButtonStyle.Secondary))));
       if (rows.length > 5) return await message.reply('Masz zbyt wiele aktywnych rozmów. Poproś obsługę o zamknięcie zakończonych zgłoszeń.');
-      await message.reply({ content: 'Do której rozmowy przekazać tę wiadomość? Wybierz zgłoszenie:', components: rows });
+      await message.reply({ content: 'Do której rozmowy przekazać tę wiadomość? Wybierz zgłoszenie. Aby zacząć nową sprawę, napisz **menu**.', components: rows });
       return;
     }
     const channel = active[0] ?? await ticket(message.author);
@@ -279,6 +301,25 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (interaction.isButton()) {
+      if (interaction.customId.startsWith('reason:')) {
+        if (interaction.guildId || interaction.message.author.id !== client.user.id) return await interaction.editReply('Wybierz sprawę w prywatnej rozmowie z botem.');
+        const [, reasonId, messageId] = interaction.customId.split(':');
+        const reason = DM_REASONS.find(item => item.id === reasonId);
+        if (!reason || (messageId !== 'new' && !/^\d+$/.test(messageId))) return await interaction.editReply('Nieprawidłowy wybór sprawy. Napisz menu.');
+        return await serial('tickets', async () => {
+          const chooser = await interaction.channel.messages.fetch(interaction.message.id);
+          if (!chooser.components.length) return await interaction.editReply('Sprawa jest już wybrana. Napisz menu, aby wybrać kolejną.');
+          let original;
+          if (messageId !== 'new') {
+            original = await interaction.channel.messages.fetch(messageId);
+            if (original.author.id !== interaction.user.id) return await interaction.editReply('To nie jest Twoja wiadomość.');
+          }
+          const channel = await ticket(interaction.user, undefined, reason);
+          if (original) await forwardCustomer(original, channel);
+          await interaction.message.edit({ content: `✅ Wybrano: **${reason.label}**.${original ? ' Twoja wiadomość została przekazana.' : ' Napisz, w czym możemy pomóc.'}`, embeds: [], components: [] });
+          await interaction.editReply(`Wybrana sprawa: ${reason.label}. Dalszą rozmowę prowadzimy tutaj. Aby zmienić sprawę, napisz menu.`);
+        });
+      }
       if (interaction.customId === VERIFY_BUTTON_ID) {
         if (interaction.guildId !== GUILD_ID || interaction.channelId !== VERIFY_CHANNEL_ID
           || interaction.message.author.id !== client.user.id) return await interaction.editReply('Ten przycisk działa tylko na kanale weryfikacji FivemShop.');
@@ -340,10 +381,9 @@ client.on(Events.InteractionCreate, async interaction => {
       }
       if (!['order', 'question'].includes(interaction.customId)) return await interaction.editReply('Nieznany przycisk.');
       try {
-        await interaction.user.send(`Witaj w ${BRAND}! Napisz, czego potrzebujesz: skiny do broni, mody/citizen, ubrania do FiveM lub optymalizacja komputera.\nPodaj wymagania i inspiracje. Otwieramy dla Ciebie osobne zgłoszenie dotyczące usług. Jeśli masz kilka rozmów, po wysłaniu wiadomości wybierz właściwe zgłoszenie.`);
+        await interaction.user.send(reasonMenu());
       } catch { return await interaction.editReply('Nie mogę wysłać Ci DM. Włącz prywatne wiadomości od członków serwera, a następnie napisz bezpośrednio do bota.'); }
-      await serial('tickets', () => ticket(interaction.user));
-      return await interaction.editReply('Otwarto zgłoszenie dotyczące usług. Napisz do bota na DM.');
+      return await interaction.editReply('Wysłałem Ci DM. Wybierz kategorię sprawy, aby otworzyć zgłoszenie.');
     }
     if (interaction.guildId !== GUILD_ID) return await interaction.editReply('Ta komenda działa wyłącznie na serwerze P.Y.K.U CREATIVE.');
     if (!await canOperate(interaction.user.id, interaction.guild)) return await interaction.editReply('Komendy są dostępne dla właściciela i rangi obsługi P.Y.K.U CREATIVE.');
@@ -398,7 +438,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const content = interaction.options.getString('tresc');
         const attachment = interaction.options.getAttachment('plik');
         if (!content && !attachment) return await interaction.editReply('Podaj treść lub plik.');
-        await user.send({ content: `**${BRAND} • ${match[1] === 'offer' ? `Oferta ${match[3].slice(-6)}` : 'Usługi'}**\n${content ?? ''}`, files: attachment ? [attachment.url] : [] });
+        await user.send({ content: `**FivemShop • ${ticketLabel(match)}**\n${content ?? ''}`, files: attachment ? [attachment.url] : [] });
         await channel.send({ content: `**Obsługa (${interaction.user.username}) → klient:**\n${content ?? ''}${attachment ? `\n${attachment.url}` : ''}` });
         return await interaction.editReply('Odpowiedź wysłana na DM.');
       }
