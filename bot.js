@@ -3,6 +3,7 @@ import {
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder,
   MessageFlags,
 } from 'discord.js';
+import { createServer } from 'node:http';
 
 const OWNER_ID = '795755381744861184';
 const CAR_OWNER_ID = '317932984663539723';
@@ -28,6 +29,82 @@ const client = new Client({
   allowedMentions: { parse: [] },
 });
 const BRAND = 'P.Y.K.U CREATIVE';
+const webCatalog = { data: null, expires: 0, pending: null };
+const CAR_GROUPS = [
+  ['sportowe', /sport/, 'Sportowe'], ['sedan', /sedan/, 'Sedan'], ['offroad', /off.?road|teren/, 'Offroad'],
+  ['bogate-tune', /bogate|tune|tuning/, 'Bogate tune'], ['motocykle', /motocykl|motor/, 'Motocykle'],
+  ['pakiety', /pakiet/, 'Pakiety aut'], ['suv', /suv/, 'SUV'], ['coupe', /coupe/, 'Coupe'], ['muscle', /muscle/, 'Muscle'], ['supersamochody', /super/, 'Supersamochody'],
+];
+function websiteOffer(message, channel) {
+  if (message.author.id !== client.user.id) return null;
+  const card = message.embeds[0];
+  if (!card?.title || !/^P\.Y\.K\.U CREATIVE • (Auta FiveM|Oferta FiveM)$/.test(card.footer?.text ?? '')) return null;
+  const cars = card.footer.text.includes('Auta FiveM');
+  const chosen = card.fields.find(field => field.name === '📂 Kategoria')?.value;
+  const category = cars ? (CAR_GROUPS.find(([key, , label]) => chosen === key || chosen === label)
+    ?? CAR_GROUPS.find(([, regex]) => regex.test(channel.name.toLowerCase())))?.[0] ?? 'inne-auta' : 'uslugi';
+  return { id: message.id, name: card.title, description: card.description ?? '',
+    price: card.fields.find(field => field.name === '💰 Cena')?.value ?? 'Wycena indywidualna',
+    images: message.embeds.map(embed => embed.image?.url).filter(Boolean),
+    category, type: cars ? 'auta' : 'uslugi', channel: channel.name, discordUrl: message.url,
+    createdAt: new Date(message.createdTimestamp).toISOString() };
+}
+async function loadWebsiteCatalog(guild) {
+  if (webCatalog.data && Date.now() < webCatalog.expires) return webCatalog.data;
+  if (webCatalog.pending) return webCatalog.pending;
+  webCatalog.pending = (async () => {
+    const channels = await guild.channels.fetch();
+    const offers = new Map(), galleries = [];
+    for (const channel of channels.values()) {
+      if (channel?.type !== ChannelType.GuildText || /^pyku:/.test(channel.topic ?? '')) continue;
+      if (!channel.permissionsFor(guild.members.me)?.has([P.ViewChannel, P.ReadMessageHistory])) continue;
+      let before;
+      while (true) {
+        const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+        for (const message of page.values()) {
+          const item = websiteOffer(message, channel);
+          if (item) offers.set(item.id, item);
+          else if (message.author.id === client.user.id && message.embeds[0]?.footer?.text === `${BRAND} • Galeria oferty`) {
+            const original = message.embeds[0].description?.match(/discord.com\/channels\/\d+\/\d+\/(\d+)/)?.[1];
+            if (original) galleries.push({ id: original, images: message.embeds.map(embed => embed.image?.url).filter(Boolean) });
+          }
+        }
+        if (page.size < 100) break;
+        before = page.last().id;
+      }
+    }
+    for (const gallery of galleries) {
+      const item = offers.get(gallery.id);
+      if (item) item.images.push(...gallery.images);
+    }
+    const data = { updatedAt: new Date().toISOString(), offers: [...offers.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)) };
+    webCatalog.data = data; webCatalog.expires = Date.now() + 60_000;
+    return data;
+  })();
+  try { return await webCatalog.pending; } finally { webCatalog.pending = null; }
+}
+function startWebsiteCatalog(guild) {
+  const server = createServer(async (request, response) => {
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Content-Type', 'application/json; charset=utf-8');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    if (request.method === 'OPTIONS') { response.writeHead(204); return response.end(); }
+    if (request.method !== 'GET') { response.writeHead(405); return response.end(JSON.stringify({ error: 'Method not allowed' })); }
+    const path = new URL(request.url, 'http://localhost').pathname;
+    if (path === '/health') return response.end(JSON.stringify({ ok: true }));
+    if (path !== '/api/offers') { response.writeHead(404); return response.end(JSON.stringify({ error: 'Not found' })); }
+    try {
+      const data = await loadWebsiteCatalog(guild);
+      response.setHeader('Cache-Control', 'public, max-age=30');
+      response.end(JSON.stringify(data));
+    } catch (error) {
+      console.error('Katalog WWW:', error.message);
+      response.writeHead(503); response.end(JSON.stringify({ error: 'Katalog jest chwilowo niedostępny' }));
+    }
+  });
+  server.on('error', error => console.error('Katalog WWW — serwer:', error.message));
+  server.listen(Number(process.env.PORT || 3000), '0.0.0.0', () => console.log('Katalog WWW: API gotowe.'));
+}
 const CATEGORY = 'PYKU • ZGŁOSZENIA';
 const OFFER_CATEGORY = 'PYKU • TICKETY Z OFERT';
 const CAR_CATEGORY = 'FivemShop • SAMOCHODY';
@@ -126,7 +203,9 @@ const commands = [
   withPhotos(new SlashCommandBuilder().setName('oferty').setDescription('Oferty samochodów — komenda opiekuna aut')
     .addStringOption(o => o.setName('nazwa').setDescription('Nazwa samochodu').setRequired(true).setMaxLength(150))
     .addStringOption(o => o.setName('opis').setDescription('Opis auta').setRequired(true).setMaxLength(3000))
-    .addStringOption(o => o.setName('cena').setDescription('Cena z walutą').setRequired(true).setMaxLength(150)))
+    .addStringOption(o => o.setName('cena').setDescription('Cena z walutą').setRequired(true).setMaxLength(150))
+    .addStringOption(o => o.setName('kategoria').setDescription('Katalog auta na Discordzie i stronie').setRequired(true)
+      .addChoices(...CAR_GROUPS.map(([value, , name]) => ({ name, value })))))
     .addChannelOption(o => o.setName('kanal').setDescription('Istniejący kanał ofert samochodów').addChannelTypes(ChannelType.GuildText)),
   new SlashCommandBuilder().setName('weryfikacja').setDescription('Opublikuj lub odśwież panel weryfikacji FivemShop'),
   withPhotos(new SlashCommandBuilder().setName('oferta').setDescription('Opublikuj ofertę z opisem, ceną i galerią')
@@ -421,6 +500,7 @@ client.once(Events.ClientReady, async () => {
       }
     }
     await guild.commands.set(commands);
+    startWebsiteCatalog(guild);
     console.log(`${BRAND}: bot działa jako ${client.user.tag}`);
     try { await serial('bump', () => checkBumpReminder(guild)); }
     catch (error) { console.error('Bump FivemShop:', error.message); }
@@ -614,7 +694,13 @@ client.on(Events.InteractionCreate, async interaction => {
         .setTitle(name).setDescription(description).addFields({ name: '💰 Cena', value: price },
           { name: '📩 Kontakt i zamówienia', value: 'Kliknij przycisk poniżej — porozmawiamy prywatnie przez bota.' })
         .setFooter({ text: `${BRAND} • ${cars ? 'Auta FiveM' : 'Oferta FiveM'}` });
+      if (cars) {
+        const category = CAR_GROUPS.find(([key]) => key === interaction.options.getString('kategoria'))
+          ?? CAR_GROUPS.find(([, regex]) => regex.test(destination.name.toLowerCase()));
+        if (category) card.addFields({ name: '📂 Kategoria', value: category[2] });
+      }
       const sent = await destination.send({ ...imagePayload(photos, card), components: [contactButton('offer_contact', cars)] });
+      webCatalog.expires = 0;
       return await interaction.editReply(`Oferta opublikowana: ${sent.url}\nID oferty do dodania kolejnych zdjęć: ${sent.id}`);
     }
     if (interaction.commandName === 'zdjecia') {
@@ -628,6 +714,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const card = new EmbedBuilder().setColor(0xa855f7).setTitle(source.embeds[0].title)
         .setDescription(`[Zobacz ofertę i cenę](${source.url})`).setFooter({ text: `${BRAND} • Galeria oferty` });
       await interaction.channel.send({ ...imagePayload(photos, card), components: [contactButton(`offer_ref:${source.channelId}:${source.id}`, source.embeds[0].footer?.text.includes('Auta FiveM'))] });
+      webCatalog.expires = 0;
       return await interaction.editReply('Dodatkowe zdjęcia opublikowane z przyciskiem kontaktu do tej oferty.');
     }
     if (interaction.commandName === 'panel') {
