@@ -5,6 +5,7 @@ import {
   MessageFlags, ModalBuilder, LabelBuilder, TextInputBuilder, TextInputStyle, FileUploadBuilder, StringSelectMenuBuilder, ChannelSelectMenuBuilder,
 } from 'discord.js';
 import { createServer } from 'node:http';
+import { createControlApi, uploadedFiles } from './control-api.mjs';
 
 const OWNER_ID = '795755381744861184';
 const CAR_OWNER_ID = '317932984663539723';
@@ -85,14 +86,87 @@ async function loadWebsiteCatalog(guild) {
   })();
   try { return await webCatalog.pending; } finally { webCatalog.pending = null; }
 }
+function desktopActions(guild) {
+  const accounts = { [OWNER_ID]:{name:'OFFWHITE',department:'Projekty i usługi'},[CAR_OWNER_ID]:{name:'Ponczula420',department:'Samochody'} };
+  const session = userId => ({user:{id:userId,...accounts[userId]},categories:CAR_GROUPS.map(([key,,label])=>({key,label,channel:CAR_CHANNELS[key]}))});
+  const id = value => {if(typeof value!=='string'||!/^\d{15,22}$/.test(value))throw new Error('Nieprawidłowy identyfikator.');return value;};
+  const actor = async userId => ({guild,guildId:GUILD_ID,user:{id:userId},member:await guild.members.fetch(userId)});
+  const record = message => {const data=carDraftFromMessage(message);return {id:message.id,channel:message.channelId,name:data.name,description:data.description,price:data.price,category:data.category,categoryLabel:data.categoryLabel,status:data.status,photos:data.photos.map(p=>p.url),version:message.editedTimestamp??null,url:message.url};};
+  async function ticketChannel(userId, channelId, allowClosed=false) {
+    const channel=await guild.channels.fetch(id(channelId));
+    const open=activeTicket(channel?.topic);const closed=/^pyku:(closed|closedoffer):(\d+)(?::(\d+))?(?::(car))?$/.exec(channel?.topic??'');
+    if(!open&&!(allowClosed&&closed))throw new Error('Zgłoszenie jest zamknięte lub nie istnieje.');
+    const topic=closed?channel.topic.replace(/^pyku:closedoffer:/,'pyku:offer:').replace(/^pyku:closed:/,'pyku:open:'):channel.topic;
+    if(!await canHandleTicket(userId,guild,topic))throw Object.assign(new Error('Nie masz dostępu do tej rozmowy.'),{status:403});
+    return {channel,match:open??closed,closed:Boolean(closed),topic};
+  }
+  return {
+    bootstrap:{run:async userId=>session(userId)},
+    'offers/list':{run:async(userId,data)=>{if(!canManageCars(userId))throw new Error('Brak dostępu do aut.');const key=data.category??'sportowe';if(!CAR_CHANNELS[key])throw new Error('Nieprawidłowa kategoria.');const channel=await offerDestination(await actor(userId),CAR_CHANNELS[key]);const messages=await channel.messages.fetch({limit:25,...(data.before?{before:id(data.before)}:{})});return {offers:[...messages.values()].filter(managedCar).map(record),before:messages.size===25?messages.last().id:null};}},
+    'offers/save':{mutation:true,run:async(userId,data)=>{
+      if(!canManageCars(userId))throw new Error('Brak dostępu do aut.');
+      const name=String(data.name??'').trim(),description=String(data.description??'').trim(),price=String(data.price??'').trim();
+      if(!name||name.length>150||!description||description.length>3000||!price||price.length>150||!CAR_CHANNELS[data.category])throw new Error('Uzupełnij nazwę, opis, cenę i kategorię.');
+      const uploads=uploadedFiles(data.files??[],{imagesOnly:true});
+      const interaction=await actor(userId);const channel=await offerDestination(interaction,CAR_CHANNELS[data.category]);
+      return serial(data.id?`car-offer:${channel.id}:${id(data.id)}`:`desktop-new:${userId}`,async()=>{
+        let source,previous;if(data.id){source=(await carOfferSource(interaction,channel.id,id(data.id))).message;if((source.editedTimestamp??null)!==(data.version??null))throw new Error('Oferta została zmieniona. Odśwież ją przed edycją.');previous=carDraftFromMessage(source);if(previous.status!=='Dostępne')throw new Error('Najpierw przywróć dostępność oferty.');}
+        const photos=uploads.length?uploads:previous?.photos??[];if(!photos.length)throw new Error('Dodaj co najmniej jedno zdjęcie.');
+        const draft={cars:true,name,description,price,category:data.category,categoryLabel:CAR_GROUPS.find(([key])=>key===data.category)[2],photos};
+        const payload=carListingPayload(draft);
+        const sent=source?await source.edit({...payload,content:null,embeds:[],attachments:[]}):await channel.send(payload);
+        webCatalog.expires=0;return {offer:record(sent)};
+      });
+    }},
+    'offers/status':{mutation:true,run:async(userId,data)=>{
+      if(!canManageCars(userId))throw new Error('Brak dostępu do aut.');if(!['Dostępne','Sprzedane','Wycofane'].includes(data.status))throw new Error('Nieprawidłowy status.');
+      const interaction=await actor(userId);return serial(`car-offer:${id(data.channel)}:${id(data.id)}`,async()=>{const {message}=await carOfferSource(interaction,data.channel,data.id);if((message.editedTimestamp??null)!==(data.version??null))throw new Error('Oferta została zmieniona. Odśwież katalog.');const draft=carDraftFromMessage(message);draft.status=data.status;const sent=await message.edit({...carListingPayload(draft),content:null,embeds:[],attachments:[]});webCatalog.expires=0;return {offer:record(sent)};});
+    }},
+    'tickets/list':{run:async(userId,data)=>{
+      const channels=await guild.channels.fetch();const rows=[];
+      for(const channel of channels.values()){
+        if(channel?.type!==ChannelType.GuildText||!/^pyku:(open|offer|closed|closedoffer):/.test(channel.topic??''))continue;
+        const closed=/^pyku:closed/.test(channel.topic);if(closed!==Boolean(data.closed))continue;
+        try{const info=await ticketChannel(userId,channel.id,true);const user=await client.users.fetch(info.match[2]);rows.push({id:channel.id,name:user.globalName??user.username,username:user.username,label:ticketLabel(activeTicket(info.topic)),closed,lastMessageId:channel.lastMessageId??null});}catch(error){if(error.status!==403)console.error('Lista rozmów:',channel.id,error.message);}
+      }
+      return {tickets:rows.sort((a,b)=>String(b.lastMessageId??b.id).localeCompare(String(a.lastMessageId??a.id)))};
+    }},
+    'tickets/messages':{run:async(userId,data)=>{
+      const {channel,closed}=await ticketChannel(userId,data.channel,true);
+      const messages=await channel.messages.fetch({limit:50,...(data.before?{before:id(data.before)}:{})});
+      return {closed,before:messages.size===50?messages.last().id:null,messages:[...messages.values()].reverse().map(m=>({id:m.id,content:m.content,author:m.author.bot?(m.content.startsWith('**Klient:**')?'customer':m.content.startsWith('**Obsługa')?'staff':'system'):'staff',name:m.author.username,time:m.createdTimestamp,files:[...m.attachments.values()].map(a=>({name:a.name,url:a.url,type:a.contentType??''})),embeds:m.embeds.map(e=>({title:e.title,description:e.description}))}))};
+    }},
+    'tickets/reply':{mutation:true,run:async(userId,data)=>serial('tickets',async()=>{
+      const {channel,match,topic}=await ticketChannel(userId,data.channel);const text=String(data.text??'').trim();const files=uploadedFiles(data.files??[],{max:3});
+      if((!text&&!files.length)||text.length>1800)throw new Error('Wpisz odpowiedź do 1800 znaków lub dodaj załącznik.');
+      const user=await client.users.fetch(match[2]);
+      const sent=await user.send({content:`**FivemShop • ${ticketLabel(activeTicket(topic))}**\n${text}`,files:files.map(f=>({attachment:f.attachment,name:f.name})),allowedMentions:{parse:[]}});
+      try{await channel.send({content:`**Obsługa (${accounts[userId].name}) → klient:**\n${text}`,files:files.map(f=>({attachment:f.attachment,name:f.name})),embeds:[new EmbedBuilder().setFooter({text:`FivemShop Desktop • ${data.operationId}`})],allowedMentions:{parse:[]}});}catch{throw new Error(`DM został wysłany (ID ${sent.id}), ale zapis w historii nie powiódł się. Nie wysyłaj ponownie tej odpowiedzi.`);}
+      return {sent:true,messageId:sent.id};
+    })},
+    'tickets/close':{mutation:true,run:async(userId,data)=>serial('tickets',async()=>{
+      const {channel,match}=await ticketChannel(userId,data.channel);
+      await channel.setTopic(channel.topic.replace(/^pyku:(open|offer):/,`pyku:${match[1]==='offer'?'closedoffer':'closed'}:`));
+      await channel.setName(`zamkniety-${channel.id}`);await channel.send(`Zgłoszenie zamknął ${accounts[userId].name} z aplikacji FivemShop.`);
+      let notified=true;try{const user=await client.users.fetch(match[2]);await user.send('FivemShop: zgłoszenie zostało zamknięte. Napisz ponownie do bota, jeśli potrzebujesz pomocy.');}catch{notified=false;}
+      return {closed:true,notified};
+    })},
+  };
+}
+
 function startWebsiteCatalog(guild) {
+  const control = createControlApi({secret:DISCORD_TOKEN,
+    accounts:{[OWNER_ID]:{name:'OFFWHITE',department:'Projekty i usługi'},[CAR_OWNER_ID]:{name:'Ponczula420',department:'Samochody'}},
+    sendCode:async(id,code)=>{const user=await client.users.fetch(id);await user.send({content:`**FivemShop • Logowanie do programu Windows**\nTwój kod: **${code}**\nWażny przez 5 minut. Wpisz go tylko w aplikacji FivemShop. Nie udostępniaj go innym osobom. Jeśli nie logujesz się do aplikacji, zignoruj wiadomość.`,allowedMentions:{parse:[]}});},actions:desktopActions(guild)});
   const server = createServer(async (request, response) => {
+    if (await control(request,response)) return;
     response.setHeader('Access-Control-Allow-Origin', '*');
     response.setHeader('Content-Type', 'application/json; charset=utf-8');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     if (request.method === 'OPTIONS') { response.writeHead(204); return response.end(); }
     if (request.method !== 'GET') { response.writeHead(405); return response.end(JSON.stringify({ error: 'Method not allowed' })); }
     const path = new URL(request.url, 'http://localhost').pathname;
+    if (path === '/api/offers') { response.writeHead(410); return response.end(JSON.stringify({error:'Publiczny katalog WWW został wyłączony.'})); }
     if (path === '/health') return response.end(JSON.stringify({ ok: true }));
     if (path !== '/api/offers') { response.writeHead(404); return response.end(JSON.stringify({ error: 'Not found' })); }
     try {

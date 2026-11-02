@@ -2,6 +2,6 @@ FROM node:24-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
-COPY bot.js ./
+COPY bot.js control-api.mjs ./
 USER node
 CMD ["npm", "start"]
