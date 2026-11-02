@@ -40,9 +40,17 @@ function memberWelcomePayload(member, count) {
     .setThumbnail(member.user.displayAvatarURL({size:256}))
     .addFields({name:'🖤 Fajnie, że jesteś z nami',value:`Jesteś naszym **#${count.toLocaleString('pl-PL')}** członkiem.`,inline:false})
     .setFooter({text:'FivemShop • Twój styl. Twoje FiveM.'}).setTimestamp(member.joinedTimestamp??Date.now());
-  return {content:`👋 <@${member.id}>, witaj w **FivemShop**!`,embeds:[card],components:[new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('✅ Weryfikacja').setURL(`https://discord.com/channels/${GUILD_ID}/${VERIFY_CHANNEL_ID}`),
-    new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('🏎️ Zobacz samochody').setURL(`https://discord.com/channels/${GUILD_ID}/1562442778795970682`))],allowedMentions:{users:[member.id],parse:[]}};
+  return {content:`👋 <@${member.id}>, witaj w **FivemShop**!`,embeds:[card],components:[],allowedMentions:{users:[member.id],parse:[]}};
+}
+async function removeMemberWelcomeButtons(guild) {
+  const channel = await guild.channels.fetch(MEMBER_WELCOME_CHANNEL_ID);
+  if(channel?.type !== ChannelType.GuildText)return;
+  const messages = await channel.messages.fetch({limit:100});
+  let updated=0;
+  for(const message of messages.values())if(message.author.id===client.user.id && message.components.length && message.embeds[0]?.author?.name==='FivemShop • Nowa osoba na pokładzie'){
+    await message.edit({components:[]});updated++;
+  }
+  console.log(`Powitania nowych członków: usunięto przyciski z ${updated} wiadomości.`);
 }
 async function welcomeNewMember(member) {
   if (member.guild.id !== GUILD_ID) return;
@@ -933,6 +941,8 @@ client.once(Events.ClientReady, async () => {
       .catch(error => console.error('Bump FivemShop:', error.message)), 60_000).unref();
     try { await publishWelcome(guild); }
     catch (error) { console.error('Powitanie FivemShop:', error.message); }
+    try { await removeMemberWelcomeButtons(guild); }
+    catch (error) { console.error('Przyciski powitań:', error.message); }
     try {
       await verificationRole(guild);
       console.log('Weryfikacja FivemShop: uprawnienia do nadawania rangi poprawne.');
