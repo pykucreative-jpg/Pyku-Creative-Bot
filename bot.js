@@ -283,10 +283,10 @@ function offerEmbeds(message) {
   if (!root) return [];
   const field = id => root.components.find(c => c.type === 10 && c.id === id)?.content;
   if (field(106) !== '-# FivemShop • Auta FiveM') return [];
-  const name = field(101)?.replace(/^### /, '');
+  const name = field(101)?.replace(/^#{2,3} /, '');
   const description = field(102) ?? '';
-  const price = field(103)?.replace(/^\*\*Cena\*\*\n/, '');
-  const category = field(104)?.replace(/^\*\*Kategoria\*\*\n/, '');
+  const price = field(103)?.replace(/^(?:\*\*Cena\*\*\n|### )/, '');
+  const category = field(104)?.replace(/^(?:\*\*Kategoria\*\*\n|-# 🏁 FIVEMSHOP · )/, '');
   const status = field(105)?.replace(/^\*\*Status\*\*\n/, '') ?? 'Dostępne';
   if (!name || !price || !category) return [];
   const images = root.components.filter(c => c.type === 12).flatMap(c => c.items).map(item => {
@@ -309,15 +309,17 @@ function carListingPayload(draft, { upload = true } = {}) {
   const status = draft.status ?? 'Dostępne';
   const active = status === 'Dostępne';
   const box = new ContainerBuilder().setId(2001).setAccentColor(active ? 0xc7a36b : 0x777777)
-    .addTextDisplayComponents(new TextDisplayBuilder().setId(101).setContent(`### ${draft.name}`));
-  if (draft.description) box.addTextDisplayComponents(new TextDisplayBuilder().setId(102).setContent(draft.description));
-  box.addSeparatorComponents(new SeparatorBuilder().setDivider(true))
-    .addTextDisplayComponents(new TextDisplayBuilder().setId(103).setContent(`**Cena**\n${draft.price}`),new TextDisplayBuilder().setId(104).setContent(`**Kategoria**\n${draft.categoryLabel}`));
+    .addTextDisplayComponents(new TextDisplayBuilder().setId(104).setContent(`-# 🏁 FIVEMSHOP · ${draft.categoryLabel}`),
+      new TextDisplayBuilder().setId(101).setContent(`## ${draft.name}`),
+      new TextDisplayBuilder().setId(103).setContent(`### ${draft.price}`));
   if (!active) box.addTextDisplayComponents(new TextDisplayBuilder().setId(105).setContent(`**Status**\n${status}`));
+  box.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
+  if (draft.description) box.addTextDisplayComponents(new TextDisplayBuilder().setId(102).setContent(draft.description));
   const photos = draft.photos.slice(0,10);
   const files = upload ? photos.map((p,i) => ({ attachment: p.url, name: `auto-${i}.${p.name.split('.').pop().toLowerCase()}` })) : [];
   if (photos.length) box.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(photos.map((p,i) => new MediaGalleryItemBuilder()
     .setURL(upload ? `attachment://${files[i].name}` : p.url).setDescription(`${draft.name} — zdjęcie ${i+1}`.slice(0,1024)))));
+  box.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
   if (active) box.addActionRowComponents(contactButton('offer_contact', true));
   box.addTextDisplayComponents(new TextDisplayBuilder().setId(106).setContent('-# FivemShop • Auta FiveM'));
   return { components: [box], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] }, ...(upload ? { files } : {}) };
@@ -330,7 +332,9 @@ async function refreshCarListingLayout(guild) {
       if (channel?.type !== ChannelType.GuildText || !channel.permissionsFor(guild.members.me)?.has([P.ViewChannel,P.ReadMessageHistory,P.SendMessages,P.AttachFiles])) continue;
       const history = await channel.messages.fetch({limit:100});
       for (const message of history.values()) {
-        if (!message.embeds.length || !managedCar(message)) continue;
+        if (!managedCar(message)) continue;
+        const container = message.components?.map(c => c.toJSON?.() ?? c).find(c => c.type === 17 && c.id === 2001);
+        if (container?.components[0]?.id === 104 && container.components[0].content?.startsWith('-# 🏁 FIVEMSHOP · ')) continue;
         const draft = carDraftFromMessage(message);
         await message.edit({ ...carListingPayload(draft), content: null, embeds: [], attachments: [] });
         updated++;
