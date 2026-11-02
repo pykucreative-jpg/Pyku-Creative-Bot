@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 const BODY_LIMIT = 29 * 1024 * 1024;
+const CODE_DELIVERY_ERROR = 'Nie udało się dostarczyć kodu na Discordzie. Włącz prywatne wiadomości na serwerze FivemShop, sprawdź, czy bot nie jest zablokowany, i spróbuj ponownie za minutę.';
 export function createControlApi({ secret, accounts, sendCode, actions, now = Date.now }) {
   if (!secret || secret.length < 16) throw new Error('Control API requires a server secret.');
   const key = createHmac('sha256', secret).update('fivemshop-desktop-control-v1').digest();
@@ -39,7 +40,7 @@ export function createControlApi({ secret, accounts, sendCode, actions, now = Da
         rate('code:'+data.id,1,60_000);
         const code=String(randomInt(100000,1000000)),challenge=randomBytes(24).toString('base64url');
         challenges.set(challenge,{id:data.id,hash:mac(challenge+code),exp:now()+5*60_000,attempts:0});
-        try{await sendCode(data.id,code);}catch{challenges.delete(challenge);throw Object.assign(new Error('Nie udało się wysłać kodu. Włącz DM od bota i spróbuj za minutę.'),{status:502});}
+        try{await sendCode(data.id,code);}catch(cause){challenges.delete(challenge);const discordCode=String(cause?.code??'');console.error('Logowanie Windows: dostarczenie DM nie powiodło się; kod Discord:',/^\d{3,8}$/.test(discordCode)?discordCode:'nieznany');throw Object.assign(new Error(CODE_DELIVERY_ERROR),{status:502,code:'CODE_DELIVERY_FAILED'});}
         json(response,200,{challenge,expiresIn:300});return true;
       }
       if(request.method==='POST' && route==='verify-code') {
@@ -68,7 +69,7 @@ export function createControlApi({ secret, accounts, sendCode, actions, now = Da
       json(response,200,await action.run(user.id,data));return true;
     } catch(error) {
       const status=error.status??400;console.error('Aplikacja Windows:',error.message);
-      json(response,status,{error:status>=500 ? 'Operacja nie została zakończona. Sprawdź historię przed ponowieniem.' : error.message});return true;
+      json(response,status,{error:error.code==='CODE_DELIVERY_FAILED' ? CODE_DELIVERY_ERROR : status>=500 ? 'Operacja nie została zakończona. Sprawdź historię przed ponowieniem.' : error.message});return true;
     }
   };
 }
