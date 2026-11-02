@@ -154,10 +154,32 @@ function desktopActions(guild) {
   };
 }
 
+const DESKTOP_LOGIN_CHANNEL = '1565758802970546206';
+const desktopLoginCards = new Map();
+let desktopLoginSequence = 0;
+async function sendDesktopLoginCode(guild, id, code) {
+  const channel = await guild.channels.fetch(DESKTOP_LOGIN_CHANNEL);
+  const me = await guild.members.fetchMe();
+  const member = await guild.members.fetch(id);
+  if (channel?.type !== ChannelType.GuildText || !channel.permissionsFor(me)?.has([P.ViewChannel,P.SendMessages]) || !channel.permissionsFor(member)?.has(P.ViewChannel)) throw new Error('Kanał logowania jest niedostępny.');
+  for (const [key,entry] of desktopLoginCards) if (entry.id === id || entry.expires <= Date.now()) {
+    desktopLoginCards.delete(key);await entry.message.delete().catch(()=>{});
+  }
+  const key = `${Date.now().toString(36)}-${++desktopLoginSequence}`;
+  const message = await channel.send({content:`🔐 <@${id}> — logowanie do **FivemShop Command Center**.\nKliknij przycisk poniżej. Kod zobaczysz tylko Ty; jest ważny przez 5 minut.\nJeśli nie logujesz się do programu, zignoruj tę wiadomość.`,components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`desktop_login:${key}`).setLabel('Pokaż mój kod').setEmoji('🔑').setStyle(ButtonStyle.Primary))],allowedMentions:{users:[id],parse:[]}});
+  const entry = {id,code,message,expires:Date.now()+5*60_000};desktopLoginCards.set(key,entry);
+  setTimeout(()=>{if(desktopLoginCards.get(key)!==entry)return;desktopLoginCards.delete(key);entry.message.delete().catch(()=>{});},5*60_000).unref();
+}
+async function showDesktopLoginCode(interaction) {
+  const entry = desktopLoginCards.get(interaction.customId.slice('desktop_login:'.length));
+  if (!entry || entry.expires <= Date.now()) return interaction.editReply('Kod wygasł. Poproś o nowy w aplikacji FivemShop.');
+  if (interaction.guildId !== GUILD_ID || interaction.channelId !== DESKTOP_LOGIN_CHANNEL || interaction.message.id !== entry.message.id || interaction.user.id !== entry.id) return interaction.editReply('Ten kod jest przeznaczony wyłącznie dla osoby wskazanej w wiadomości.');
+  return interaction.editReply({content:`🔑 Twój kod do FivemShop: **${entry.code}**\nWpisz go w programie Windows. Kod jest jednorazowy i ważny przez 5 minut od wygenerowania.`,allowedMentions:{parse:[]}});
+}
 function startWebsiteCatalog(guild) {
   const control = createControlApi({secret:DISCORD_TOKEN,
     accounts:{[OWNER_ID]:{name:'OFFWHITE',department:'Projekty i usługi'},[CAR_OWNER_ID]:{name:'Ponczula420',department:'Samochody'}},
-    sendCode:async(id,code)=>{const user=await client.users.fetch(id);await user.send({content:`**FivemShop • Logowanie do programu Windows**\nTwój kod: **${code}**\nWażny przez 5 minut. Wpisz go tylko w aplikacji FivemShop. Nie udostępniaj go innym osobom. Jeśli nie logujesz się do aplikacji, zignoruj wiadomość.`,allowedMentions:{parse:[]}});},actions:desktopActions(guild)});
+    sendCode:(id,code)=>sendDesktopLoginCode(guild,id,code),actions:desktopActions(guild)});
   const server = createServer(async (request, response) => {
     if (await control(request,response)) return;
     response.setHeader('Access-Control-Allow-Origin', '*');
@@ -961,6 +983,7 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (interaction.isButton()) {
+      if (interaction.customId.startsWith('desktop_login:')) return await showDesktopLoginCode(interaction);
       if (interaction.customId === 'fivemshop_verify') return await interaction.editReply('Panel został zaktualizowany. Przeczytaj regulamin w aktualnym panelu i kliknij „Akceptuję regulamin i weryfikuję się”.');
       if (interaction.customId.startsWith('reason:')) {
         if (interaction.guildId || interaction.message.author.id !== client.user.id) return await interaction.editReply('Wybierz sprawę w prywatnej rozmowie z botem.');
