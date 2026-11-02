@@ -1,6 +1,7 @@
 import {
   Client, Events, GatewayIntentBits, Partials, ChannelType, PermissionFlagsBits as P,
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder,
+  ContainerBuilder, TextDisplayBuilder, SeparatorBuilder, MediaGalleryBuilder, MediaGalleryItemBuilder,
   MessageFlags, ModalBuilder, LabelBuilder, TextInputBuilder, TextInputStyle, FileUploadBuilder, StringSelectMenuBuilder, ChannelSelectMenuBuilder,
 } from 'discord.js';
 import { createServer } from 'node:http';
@@ -37,7 +38,7 @@ const CAR_GROUPS = [
 ];
 function websiteOffer(message, channel) {
   if (message.author.id !== client.user.id) return null;
-  const card = message.embeds[0];
+  const card = offerEmbeds(message)[0];
   if (!card?.title || !/^P\.Y\.K\.U CREATIVE • (Auta FiveM|Oferta FiveM)$/.test(card.footer?.text ?? '')) return null;
   const cars = card.footer.text.includes('Auta FiveM');
   if (cars && card.fields.some(field => field.name === 'Status' && ['Sprzedane','Wycofane'].includes(field.value))) return null;
@@ -46,7 +47,7 @@ function websiteOffer(message, channel) {
     ?? CAR_GROUPS.find(([, regex]) => regex.test(channel.name.toLowerCase())))?.[0] ?? 'inne-auta' : 'uslugi';
   return { id: message.id, name: card.title, description: card.description ?? '',
     price: card.fields.find(field => field.name === '💰 Cena')?.value ?? 'Wycena indywidualna',
-    images: message.embeds.map(embed => embed.image?.url).filter(Boolean),
+    images: offerEmbeds(message).map(embed => embed.image?.url).filter(Boolean),
     category, type: cars ? 'auta' : 'uslugi', channel: channel.name, discordUrl: message.url,
     createdAt: new Date(message.createdTimestamp).toISOString() };
 }
@@ -67,7 +68,7 @@ async function loadWebsiteCatalog(guild) {
           if (item) offers.set(item.id, item);
           else if (message.author.id === client.user.id && message.embeds[0]?.footer?.text === `${BRAND} • Galeria oferty`) {
             const original = message.embeds[0].description?.match(/discord.com\/channels\/\d+\/\d+\/(\d+)/)?.[1];
-            if (original) galleries.push({ id: original, images: message.embeds.map(embed => embed.image?.url).filter(Boolean) });
+            if (original) galleries.push({ id: original, images: offerEmbeds(message).map(embed => embed.image?.url).filter(Boolean) });
           }
         }
         if (page.size < 100) break;
@@ -201,12 +202,72 @@ function imagePayload(photos, first) {
 }
 const OFFER_PANEL_CHANNEL = '1566745743224737812';
 const OFFER_PANEL_MARKER = 'FivemShop • Stały panel ofert v1';
+// One public car listing: text, native photo gallery and order button in one container.
+function offerEmbeds(message) {
+  if (message.embeds?.length) return message.embeds;
+  const root = message.components?.map(c => c.toJSON?.() ?? c).find(c => c.type === 17 && c.id === 2001);
+  if (!root) return [];
+  const field = id => root.components.find(c => c.type === 10 && c.id === id)?.content;
+  if (field(106) !== '-# FivemShop • Auta FiveM') return [];
+  const name = field(101)?.replace(/^### /, '');
+  const description = field(102) ?? '';
+  const price = field(103)?.replace(/^\*\*Cena\*\*\n/, '');
+  const category = field(104)?.replace(/^\*\*Kategoria\*\*\n/, '');
+  const status = field(105)?.replace(/^\*\*Status\*\*\n/, '') ?? 'Dostępne';
+  if (!name || !price || !category) return [];
+  const images = root.components.filter(c => c.type === 12).flatMap(c => c.items).map(item => item.media?.url).filter(Boolean);
+  const card = { title: name, description, fields: [{ name: '💰 Cena', value: price }, { name: '📂 Kategoria', value: category }, { name: 'Status', value: status }], footer: { text: `${BRAND} • Auta FiveM` } };
+  if (images[0]) card.image = { url: images[0] };
+  return [card, ...images.slice(1).map(url => ({ image: { url } }))];
+}
+function carDraftFromMessage(message) {
+  const embeds = offerEmbeds(message), card = embeds[0];
+  const category = CAR_GROUPS.find(([key, , label]) => card.fields.some(f => f.name === '📂 Kategoria' && [key,label].includes(f.value)))
+    ?? CAR_GROUPS.find(([key]) => CAR_CHANNELS[key] === message.channelId);
+  return { cars: true, name: card.title, description: card.description ?? '', price: card.fields.find(f => f.name === '💰 Cena')?.value ?? 'Do ustalenia', category: category?.[0], categoryLabel: category?.[2] ?? 'Samochody', status: card.fields.find(f => f.name === 'Status')?.value ?? 'Dostępne',
+    photos: embeds.map(e => e.image?.url).filter(Boolean).map((url,i) => ({ url, name: `auto-${i}.${/\.(gif|webp|jpe?g)(?:\?|$)/i.exec(url)?.[1] ?? 'png'}` })) };
+}
+function carListingPayload(draft, { upload = true } = {}) {
+  const status = draft.status ?? 'Dostępne';
+  const active = status === 'Dostępne';
+  const box = new ContainerBuilder().setId(2001).setAccentColor(active ? 0xc7a36b : 0x777777)
+    .addTextDisplayComponents(new TextDisplayBuilder().setId(101).setContent(`### ${draft.name}`));
+  if (draft.description) box.addTextDisplayComponents(new TextDisplayBuilder().setId(102).setContent(draft.description));
+  box.addSeparatorComponents(new SeparatorBuilder().setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setId(103).setContent(`**Cena**\n${draft.price}`),new TextDisplayBuilder().setId(104).setContent(`**Kategoria**\n${draft.categoryLabel}`));
+  if (!active) box.addTextDisplayComponents(new TextDisplayBuilder().setId(105).setContent(`**Status**\n${status}`));
+  const photos = draft.photos.slice(0,10);
+  const files = upload ? photos.map((p,i) => ({ attachment: p.url, name: `auto-${i}.${p.name.split('.').pop().toLowerCase()}` })) : [];
+  if (photos.length) box.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(photos.map((p,i) => new MediaGalleryItemBuilder()
+    .setURL(upload ? `attachment://${files[i].name}` : p.url).setDescription(`${draft.name} — zdjęcie ${i+1}`.slice(0,1024)))));
+  if (active) box.addActionRowComponents(contactButton('offer_contact', true));
+  box.addTextDisplayComponents(new TextDisplayBuilder().setId(106).setContent('-# FivemShop • Auta FiveM'));
+  return { components: [box], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] }, ...(upload ? { files } : {}) };
+}
+async function refreshCarListingLayout(guild) {
+  let updated = 0;
+  for (const id of Object.values(CAR_CHANNELS)) {
+    try {
+      const channel = await guild.channels.fetch(id);
+      if (channel?.type !== ChannelType.GuildText || !channel.permissionsFor(guild.members.me)?.has([P.ViewChannel,P.ReadMessageHistory,P.SendMessages,P.AttachFiles])) continue;
+      const history = await channel.messages.fetch({limit:100});
+      for (const message of history.values()) {
+        if (!message.embeds.length || !managedCar(message)) continue;
+        const draft = carDraftFromMessage(message);
+        await message.edit({ ...carListingPayload(draft), content: null, embeds: [], attachments: [] });
+        updated++;
+      }
+    } catch (error) { console.error('Układ ogłoszeń aut:', id, error.message); }
+  }
+  console.log(`Układ ogłoszeń aut: odświeżono ${updated} ofert.`);
+}
+
 const CAR_CHANNELS = Object.freeze({ sportowe: '1562442778795970682', sedan: '1562442783371825202', offroad: '1562442788107194489', 'bogate-tune': '1562442792771264532', motocykle: '1562488312424304721', pakiety: '1562442797615939594', suv: '1562995799628058624', coupe: '1562995805369925712', muscle: '1562995843680964698', supersamochody: '1562995855466823730' });
 const canManageCars = userId => [OWNER_ID, CAR_OWNER_ID].includes(userId);
 const carChannelMenu = customId => new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder('Wybierz katalog samochodów')
   .addOptions(CAR_GROUPS.map(([key, , label]) => ({ label, value: CAR_CHANNELS[key] }))));
 function managedCar(message) {
-  return message?.author?.id === client.user.id && message.embeds[0]?.footer?.text === `${BRAND} • Auta FiveM`;
+  return message?.author?.id === client.user.id && offerEmbeds(message)[0]?.footer?.text === `${BRAND} • Auta FiveM`;
 }
 async function carOfferSource(interaction, channelId, messageId) {
   if (!Object.values(CAR_CHANNELS).includes(channelId)) throw new Error('To nie jest kanał katalogu samochodów.');
@@ -216,8 +277,8 @@ async function carOfferSource(interaction, channelId, messageId) {
   return { channel, message };
 }
 function carManageView(message, channelId) {
-  const status = message.embeds[0].fields.find(f => f.name === 'Status')?.value ?? 'Dostępne';
-  return { content: `**Zarządzanie samochodem** · <#${channelId}>\n${message.url}\nStatus: **${status}**`, embeds: message.embeds,
+  const status = offerEmbeds(message)[0].fields.find(f => f.name === 'Status')?.value ?? 'Dostępne';
+  return { content: `**Zarządzanie samochodem** · <#${channelId}>\n${message.url}\nStatus: **${status}**`, embeds: offerEmbeds(message),
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`offerpanel:caredit:${channelId}:${message.id}`).setLabel('Edytuj ofertę / cenę').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`offerpanel:carstate:${channelId}:${message.id}:sold`).setLabel('Oznacz jako sprzedane').setStyle(ButtonStyle.Secondary),
@@ -237,7 +298,7 @@ async function handleCarManagement(interaction) {
     const found = [...page.values()].filter(managedCar);
     const rows = [carChannelMenu('offerpanel:carlist')];
     if (found.length) rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`offerpanel:carpick:${target}`).setPlaceholder('Wybierz samochód')
-      .addOptions(found.map(m => ({ label: m.embeds[0].title.slice(0, 100), description: `${m.embeds[0].fields.find(f => f.name === '💰 Cena')?.value ?? 'Cena do ustalenia'} · ${m.embeds[0].fields.find(f => f.name === 'Status')?.value ?? 'Dostępne'}`.slice(0, 100), value: m.id })))));
+      .addOptions(found.map(m => ({ label: offerEmbeds(m)[0].title.slice(0, 100), description: `${offerEmbeds(m)[0].fields.find(f => f.name === '💰 Cena')?.value ?? 'Cena do ustalenia'} · ${offerEmbeds(m)[0].fields.find(f => f.name === 'Status')?.value ?? 'Dostępne'}`.slice(0, 100), value: m.id })))));
     if (page.size === 25) rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`offerpanel:carmore:${target}:${page.last().id}`).setLabel('Starsze wiadomości / oferty').setStyle(ButtonStyle.Secondary)));
     return interaction.editReply({ content: `**Oferty w <#${target}>**\n${found.length ? 'Wybierz samochód do edycji lub zmiany statusu.' : 'W tej części historii nie ma ofert. Wybierz inny katalog lub starsze wiadomości.'}`, embeds: [], components: rows });
   }
@@ -248,11 +309,11 @@ async function handleCarManagement(interaction) {
   }
   if (action === 'caredit') {
     const { message, channel } = await carOfferSource(interaction, channelId, messageId);
-    const card = message.embeds[0];
+    const card = offerEmbeds(message)[0];
     if (card.fields.some(f => f.name === 'Status' && f.value !== 'Dostępne')) throw new Error('Najpierw przywróć dostępność oferty, aby ją edytować.');
     const category = CAR_GROUPS.find(([key, , label]) => card.fields.some(f => f.name === '📂 Kategoria' && [key,label].includes(f.value)))
       ?? CAR_GROUPS.find(([key]) => CAR_CHANNELS[key] === channel.id);
-    const photos = message.embeds.map(e => e.image?.url).filter(Boolean).map((url,i) => ({ url, name: `auto-${i}.${/\.(gif|webp|jpe?g)(?:\?|$)/i.exec(url)?.[1] ?? 'png'}` }));
+    const photos = offerEmbeds(message).map(e => e.image?.url).filter(Boolean).map((url,i) => ({ url, name: `auto-${i}.${/\.(gif|webp|jpe?g)(?:\?|$)/i.exec(url)?.[1] ?? 'png'}` }));
     const draft = { owner: interaction.user.id, guild: interaction.guildId, cars: true, name: card.title, description: card.description ?? '', price: card.fields.find(f => f.name === '💰 Cena')?.value ?? '', category: category[0], categoryLabel: category[2], channel: channel.id, photos, created: Date.now(), busy: false, source: { channel: channel.id, id: message.id, edited: message.editedTimestamp ?? null } };
     cleanOfferDrafts(); offerDrafts.set(interaction.id, draft);
     return interaction.showModal(offerForm(true, interaction.id, draft).setCustomId(`offerpanel:revise:cars:${interaction.id}`));
@@ -268,12 +329,9 @@ async function handleCarManagement(interaction) {
     }
     return serial(`car-offer:${channelId}:${messageId}`, async () => {
       const { message } = await carOfferSource(interaction, channelId, messageId);
-      const card = EmbedBuilder.from(message.embeds[0]);
-      const fields = message.embeds[0].fields.filter(f => f.name !== 'Status' && f.name !== '📩 Kontakt i zamówienia');
-      card.setFields(...fields, { name: 'Status', value: state === 'sold' ? 'Sprzedane' : state === 'withdrawn' ? 'Wycofane' : 'Dostępne' });
-      if (state === 'active') card.addFields({ name: '📩 Kontakt i zamówienia', value: 'Kliknij przycisk poniżej — porozmawiamy prywatnie przez bota.' });
-      card.setColor(state === 'active' ? 0xc7a36b : 0x777777);
-      const updated = await message.edit({ embeds: [card,...message.embeds.slice(1)], components: state === 'active' ? [contactButton('offer_contact', true)] : [], allowedMentions: { parse: [] } });
+      const draft = carDraftFromMessage(message);
+      draft.status = state === 'sold' ? 'Sprzedane' : state === 'withdrawn' ? 'Wycofane' : 'Dostępne';
+      const updated = await message.edit({ ...carListingPayload(draft), content: null, embeds: [], attachments: [] });
       webCatalog.expires = 0;
       return interaction.editReply(carManageView(updated, channelId));
     });
@@ -418,9 +476,9 @@ async function handleOfferPanel(interaction) {
       sent = await serial(`car-offer:${draft.source.channel}:${draft.source.id}`, async () => {
         const { message } = await carOfferSource(interaction, draft.source.channel, draft.source.id);
         if ((message.editedTimestamp ?? null) !== draft.source.edited) { draft.busy = false; throw new Error('Oferta została zmieniona przez inną osobę. Otwórz jej aktualną wersję w panelu.'); }
-        return message.edit({ ...imagePayload(draft.photos, draftCard(draft)), attachments: [], components: [contactButton('offer_contact', true)], allowedMentions: { parse: [] } });
+        return message.edit({ ...carListingPayload(draft), content: null, embeds: [], attachments: [] });
       });
-    } else sent = await destination.send({ ...imagePayload(draft.photos, draftCard(draft)), components: [contactButton('offer_contact', draft.cars)], allowedMentions: { parse: [] } });
+    } else sent = await destination.send(draft.cars ? carListingPayload(draft) : { ...imagePayload(draft.photos, draftCard(draft)), components: [contactButton('offer_contact', false)], allowedMentions: { parse: [] } });
     offerDrafts.delete(id); webCatalog.expires = 0;
     return interaction.editReply({ content: `✅ ${draft.source ? 'Zmiany zapisane' : 'Oferta opublikowana'}: ${sent.url}\nID do komendy /zdjecia: ${sent.id}`, embeds: [],
       components: draft.cars ? [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('offerpanel:new:cars').setLabel(action === 'publishnext' ? 'Dodaj kolejne auto' : 'Dodaj samochód').setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId('offerpanel:manage').setLabel('Zarządzaj samochodami').setStyle(ButtonStyle.Secondary))] : [] });
@@ -715,7 +773,7 @@ client.once(Events.ClientReady, async () => {
             if (link) {
               const sourceChannel = await guild.channels.fetch(link[1]);
               const source = await sourceChannel.messages.fetch(link[2]);
-              if (source.author.id === client.user.id && source.embeds[0]?.footer?.text.includes('Auta FiveM')) await channel.setTopic(`${channel.topic}:car`);
+              if (source.author.id === client.user.id && offerEmbeds(source)[0]?.footer?.text.includes('Auta FiveM')) await channel.setTopic(`${channel.topic}:car`);
             }
           } catch (error) { console.error('Migracja zgłoszenia oferty:', channel.id, error.message); }
         }
@@ -730,6 +788,7 @@ client.once(Events.ClientReady, async () => {
     }
     await guild.commands.set(commands);
     startWebsiteCatalog(guild);
+    await refreshCarListingLayout(guild);
     try { await publishOfferPanel(guild); } catch (error) { console.error("Stały panel ofert:", error.message); }
     console.log(`${BRAND}: bot działa jako ${client.user.tag}`);
     try { await serial('bump', () => checkBumpReminder(guild)); }
@@ -879,18 +938,18 @@ client.on(Events.InteractionCreate, async interaction => {
           const channel = await interaction.guild.channels.fetch(channelId);
           source = await channel.messages.fetch(messageId);
         }
-        if (source.author.id !== client.user.id || !source.embeds[0]?.title) return await interaction.editReply('Nie znaleziono oferty.');
+        if (source.author.id !== client.user.id || !offerEmbeds(source)[0]?.title) return await interaction.editReply('Nie znaleziono oferty.');
         if (managedCar(source)) {
           source = await source.channel.messages.fetch(source.id);
-          if (source.embeds[0].fields.some(f => f.name === 'Status' && ['Sprzedane','Wycofane'].includes(f.value))) return await interaction.editReply('Ta oferta samochodu nie jest już dostępna. Sprawdź aktualny katalog aut.');
+          if (offerEmbeds(source)[0].fields.some(f => f.name === 'Status' && ['Sprzedane','Wycofane'].includes(f.value))) return await interaction.editReply('Ta oferta samochodu nie jest już dostępna. Sprawdź aktualny katalog aut.');
         }
-        const title = source.embeds[0].title;
-        const price = source.embeds[0].fields.find(f => f.name === '💰 Cena')?.value ?? 'Do ustalenia';
+        const title = offerEmbeds(source)[0].title;
+        const price = offerEmbeds(source)[0].fields.find(f => f.name === '💰 Cena')?.value ?? 'Do ustalenia';
         try {
           await interaction.user.send({ content: `**${BRAND} — ${title}**\nCena: ${price}\n${source.url}\n\nTwoje zapytanie trafi do obsługi. Napisz tutaj, co chcesz zamówić lub o co zapytać.`, allowedMentions: { parse: [] } });
         } catch { return await interaction.editReply('Włącz DM od członków serwera i kliknij ponownie.'); }
         await serial('tickets', async () => {
-          const channel = await ticket(interaction.user, source.id, undefined, source.embeds[0]?.footer?.text.includes('Auta FiveM'));
+          const channel = await ticket(interaction.user, source.id, undefined, offerEmbeds(source)[0]?.footer?.text.includes('Auta FiveM'));
           await channel.send({ embeds: [new EmbedBuilder().setColor(0xa855f7).setTitle('📩 Zapytanie o ofertę')
             .setDescription(`Klient: ${interaction.user.username}\n**${title}**\nCena: ${price}\n${source.url}`)] });
         });
@@ -943,7 +1002,7 @@ client.on(Events.InteractionCreate, async interaction => {
           ?? CAR_GROUPS.find(([, regex]) => regex.test(destination.name.toLowerCase()));
         if (category) card.addFields({ name: '📂 Kategoria', value: category[2] });
       }
-      const sent = await destination.send({ ...imagePayload(photos, card), components: [contactButton('offer_contact', cars)] });
+      const sent = await destination.send(cars ? carListingPayload({ cars:true, name, description, price, categoryLabel: card.data.fields.find(f => f.name === '📂 Kategoria')?.value ?? 'Samochody', photos }) : { ...imagePayload(photos, card), components: [contactButton('offer_contact', false)] });
       webCatalog.expires = 0;
       return await interaction.editReply(`Oferta opublikowana: ${sent.url}\nID oferty do dodania kolejnych zdjęć: ${sent.id}`);
     }
@@ -951,13 +1010,27 @@ client.on(Events.InteractionCreate, async interaction => {
       const id = interaction.options.getString('oferta_id').trim();
       if (!/^\d+$/.test(id)) return await interaction.editReply('Podaj ID wiadomości oferty.');
       const source = await interaction.channel.messages.fetch(id);
-      if (interaction.user.id === CAR_OWNER_ID && !source.embeds[0]?.footer?.text.includes('Auta FiveM')) return await interaction.editReply('Możesz dodawać zdjęcia tylko do ofert samochodów.');
+      if (interaction.user.id === CAR_OWNER_ID && !offerEmbeds(source)[0]?.footer?.text.includes('Auta FiveM')) return await interaction.editReply('Możesz dodawać zdjęcia tylko do ofert samochodów.');
+      if (managedCar(source)) {
+        if (!canManageCars(interaction.user.id)) return await interaction.editReply('Galeria samochodów jest dostępna dla Ponczula420 i OFFWHITE.');
+        return serial(`car-offer:${source.channelId}:${source.id}`, async () => {
+          const fresh = await source.channel.messages.fetch(source.id);
+          const draft = carDraftFromMessage(fresh);
+          let photos;
+          try { photos = photosFrom(interaction); } catch (error) { return await interaction.editReply(error.message); }
+          if (draft.photos.length + photos.length > 10) return await interaction.editReply('Jedno ogłoszenie mieści maksymalnie 10 zdjęć. Zastąp galerię przez edycję w panelu.');
+          draft.photos.push(...photos);
+          await fresh.edit({ ...carListingPayload(draft), content: null, embeds: [], attachments: [] });
+          webCatalog.expires = 0;
+          return await interaction.editReply(`Zdjęcia dodane do tej samej oferty: ${fresh.url}`);
+        });
+      }
       if (source.author.id !== client.user.id || !source.components.some(row => row.components.some(c => c.customId === 'offer_contact'))) return await interaction.editReply('To nie jest oferta utworzona przez /oferta na tym kanale.');
       let photos;
       try { photos = photosFrom(interaction); } catch (error) { return await interaction.editReply(error.message); }
-      const card = new EmbedBuilder().setColor(0xa855f7).setTitle(source.embeds[0].title)
+      const card = new EmbedBuilder().setColor(0xa855f7).setTitle(offerEmbeds(source)[0].title)
         .setDescription(`[Zobacz ofertę i cenę](${source.url})`).setFooter({ text: `${BRAND} • Galeria oferty` });
-      await interaction.channel.send({ ...imagePayload(photos, card), components: [contactButton(`offer_ref:${source.channelId}:${source.id}`, source.embeds[0].footer?.text.includes('Auta FiveM'))] });
+      await interaction.channel.send({ ...imagePayload(photos, card), components: [contactButton(`offer_ref:${source.channelId}:${source.id}`, offerEmbeds(source)[0].footer?.text.includes('Auta FiveM'))] });
       webCatalog.expires = 0;
       return await interaction.editReply('Dodatkowe zdjęcia opublikowane z przyciskiem kontaktu do tej oferty.');
     }
