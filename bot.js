@@ -1,7 +1,7 @@
 import {
   Client, Events, GatewayIntentBits, Partials, ChannelType, PermissionFlagsBits as P,
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder,
-  MessageFlags,
+  MessageFlags, ModalBuilder, LabelBuilder, TextInputBuilder, TextInputStyle, FileUploadBuilder, StringSelectMenuBuilder, ChannelSelectMenuBuilder,
 } from 'discord.js';
 import { createServer } from 'node:http';
 
@@ -198,6 +198,119 @@ function imagePayload(photos, first) {
   });
   return { embeds, files };
 }
+const OFFER_PANEL_CHANNEL = '1566745743224737812';
+const OFFER_PANEL_MARKER = 'FivemShop • Stały panel ofert v1';
+const offerDrafts = new Map();
+const draftLifetime = 15 * 60_000;
+function cleanOfferDrafts() {
+  for (const [id, draft] of offerDrafts) if (Date.now() - draft.created > draftLifetime) offerDrafts.delete(id);
+}
+setInterval(cleanOfferDrafts, 60_000).unref();
+const serviceGroups = [['skiny', 'Skiny do broni'], ['mody', 'Mody'], ['citizeny', 'Citizeny'], ['ubrania', 'Ubrania'], ['optymalizacja', 'Optymalizacja PC']];
+function offerForm(cars, id) {
+  const text = (key, label, max, paragraph = false) => new LabelBuilder().setLabel(label).setTextInputComponent(
+    new TextInputBuilder().setCustomId(key).setStyle(paragraph ? TextInputStyle.Paragraph : TextInputStyle.Short).setMaxLength(max).setRequired(true));
+  return new ModalBuilder().setCustomId(`offerpanel:form:${cars ? 'cars' : 'services'}:${id}`).setTitle(cars ? 'Dodaj samochód' : 'Dodaj ofertę usługi')
+    .addLabelComponents(text('name', 'Nazwa oferty', 150), text('description', 'Opis', 3000, true), text('price', 'Cena, np. 35 zł', 150),
+      new LabelBuilder().setLabel('Kategoria').setStringSelectMenuComponent(new StringSelectMenuBuilder().setCustomId('category').setMinValues(1).setMaxValues(1)
+        .addOptions((cars ? CAR_GROUPS.map(([value, , label]) => ({ label, value })) : serviceGroups.map(([value, label]) => ({ label, value }))))),
+      new LabelBuilder().setLabel('Zdjęcia (od 1 do 10)').setDescription('PNG, JPG, GIF lub WEBP').setFileUploadComponent(
+        new FileUploadBuilder().setCustomId('photos').setMinValues(1).setMaxValues(10).setRequired(true)));
+}
+function draftCard(draft) {
+  return new EmbedBuilder().setColor(0xc7a36b).setAuthor({ name: BRAND }).setTitle(draft.name).setDescription(draft.description)
+    .addFields({ name: '💰 Cena', value: draft.price }, { name: '📂 Kategoria', value: draft.categoryLabel },
+      { name: '📩 Kontakt i zamówienia', value: 'Kliknij przycisk poniżej — porozmawiamy prywatnie przez bota.' })
+    .setFooter({ text: `${BRAND} • ${draft.cars ? 'Auta FiveM' : 'Oferta FiveM'}` });
+}
+function draftView(draft, id) {
+  const embeds = [draftCard(draft).setImage(draft.photos[0].url), ...draft.photos.slice(1).map(p => new EmbedBuilder().setImage(p.url))];
+  return { content: `**Podgląd — oferta nie została jeszcze wysłana.**\nKategoria: **${draft.categoryLabel}**\nKanał publikacji: ${draft.channel ? `<#${draft.channel}>` : '**wybierz poniżej**'}\nZdjęć: ${draft.photos.length} • szkic ważny przez 15 minut.`, embeds,
+    components: [new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`offerpanel:channel:${id}`)
+      .setPlaceholder('Wybierz kanał publikacji').setChannelTypes(ChannelType.GuildText).setMinValues(1).setMaxValues(1)),
+      new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`offerpanel:publish:${id}`).setLabel('Opublikuj ofertę').setStyle(ButtonStyle.Success).setDisabled(!draft.channel),
+        new ButtonBuilder().setCustomId(`offerpanel:cancel:${id}`).setLabel('Anuluj szkic').setStyle(ButtonStyle.Secondary))], allowedMentions: { parse: [] } };
+}
+async function publishOfferPanel(guild) {
+  const channel = await guild.channels.fetch(OFFER_PANEL_CHANNEL);
+  if (channel?.type !== ChannelType.GuildText) throw new Error('Kanał stałego panelu ofert nie jest kanałem tekstowym.');
+  const history = await channel.messages.fetch({ limit: 100 });
+  const existing = history.find(m => m.author.id === client.user.id && m.embeds[0]?.footer?.text === OFFER_PANEL_MARKER);
+  const payload = { embeds: [new EmbedBuilder().setColor(0xc7a36b).setTitle('FivemShop • Dodawanie ofert')
+    .setDescription('**1.** Kliknij przycisk i uzupełnij nazwę, opis, cenę oraz kategorię.\n**2.** Dodaj od 1 do 10 zdjęć z komputera lub telefonu.\n**3.** Wybierz kanał, sprawdź podgląd i kliknij **Opublikuj ofertę**.\n\n🚗 **Samochody — Ponczula420**\n🛠️ **Pozostałe projekty i usługi — OFFWHITE**\n\nFormularz i szkic widzisz tylko Ty. Gotowa oferta pojawi się jako wiadomość bota z przyciskiem zamówienia.').setFooter({ text: OFFER_PANEL_MARKER })],
+    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('offerpanel:new:cars').setLabel('Dodaj samochód').setEmoji('🚗').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('offerpanel:new:services').setLabel('Dodaj usługę / projekt').setEmoji('🛠️').setStyle(ButtonStyle.Secondary))], allowedMentions: { parse: [] } };
+  const sent = existing ? await existing.edit(payload) : await channel.send(payload);
+  console.log(`Stały panel ofert gotowy: ${sent.url}`);
+  return sent;
+}
+async function offerDestination(interaction, id) {
+  const channel = await interaction.guild.channels.fetch(id);
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  if (channel?.type !== ChannelType.GuildText || /^pyku:/.test(channel.topic ?? '')) throw new Error('Wybierz zwykły kanał ofert, a nie kanał ticketa.');
+  if (channel.id === OFFER_PANEL_CHANNEL) throw new Error('Wybierz kanał katalogu, a nie kanał tego panelu.');
+  if (!channel.permissionsFor(member)?.has([P.ViewChannel, P.SendMessages])) throw new Error('Nie masz uprawnień do publikacji na tym kanale.');
+  if (!channel.permissionsFor(interaction.guild.members.me)?.has([P.ViewChannel, P.SendMessages, P.EmbedLinks, P.AttachFiles])) throw new Error('Bot potrzebuje na tym kanale uprawnień do wysyłania wiadomości, linków i załączników.');
+  return channel;
+}
+async function handleOfferPanel(interaction) {
+  if (interaction.guildId !== GUILD_ID || !await canOperate(interaction.user.id, interaction.guild)) {
+    return interaction.reply({ content: 'Panel jest dostępny wyłącznie dla obsługi FivemShop.', flags: MessageFlags.Ephemeral });
+  }
+  const [, action, id, nonce] = interaction.customId.split(':');
+  if (action === 'new') {
+    const cars = id === 'cars';
+    if ((cars && interaction.user.id !== CAR_OWNER_ID) || (!cars && interaction.user.id === CAR_OWNER_ID)) {
+      return interaction.reply({ content: cars ? 'Samochody publikuje Ponczula420.' : 'Ten dział jest przeznaczony dla OFFWHITE i obsługi usług.', flags: MessageFlags.Ephemeral });
+    }
+    return interaction.showModal(offerForm(cars, interaction.id));
+  }
+  if (action === 'form') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const cars = id === 'cars';
+    if ((cars && interaction.user.id !== CAR_OWNER_ID) || (!cars && interaction.user.id === CAR_OWNER_ID)) throw new Error('Nie masz dostępu do tego działu.');
+    const name = interaction.fields.getTextInputValue('name').trim();
+    const description = interaction.fields.getTextInputValue('description').trim();
+    const price = interaction.fields.getTextInputValue('price').trim();
+    const category = interaction.fields.getStringSelectValues('category')[0];
+    const categoryLabel = cars ? CAR_GROUPS.find(([key]) => key === category)?.[2] : serviceGroups.find(([key]) => key === category)?.[1];
+    const photos = [...(interaction.fields.getUploadedFiles('photos')?.values() ?? [])];
+    if (!name || !description || !price || !categoryLabel || !photos.length || photos.length > 10) throw new Error('Uzupełnij wszystkie pola i dodaj od 1 do 10 zdjęć.');
+    if (photos.some(p => !/\.(png|jpe?g|gif|webp)$/i.test(p.name ?? '') || (p.contentType && !/^image\//.test(p.contentType)))) throw new Error('Dodaj wyłącznie zdjęcia PNG, JPG, GIF lub WEBP.');
+    if (photos.some(p => p.size > (interaction.guild.maximumUploadLimit ?? 10 * 1024 * 1024))) throw new Error('Zdjęcie przekracza limit załącznika tego serwera. Zmniejsz je i otwórz formularz ponownie.');
+    cleanOfferDrafts();
+    for (const [key, draft] of offerDrafts) if (draft.owner === interaction.user.id && !draft.busy) offerDrafts.delete(key);
+    const draft = { owner: interaction.user.id, guild: interaction.guildId, created: Date.now(), cars, name, description, price, category, categoryLabel, photos, busy: false };
+    offerDrafts.set(nonce, draft);
+    return interaction.editReply(draftView(draft, nonce));
+  }
+  const draft = offerDrafts.get(id);
+  if (!draft || draft.owner !== interaction.user.id || draft.guild !== interaction.guildId || Date.now() - draft.created > draftLifetime) {
+    return interaction.reply({ content: 'Szkic wygasł albo bot został zrestartowany. Kliknij „Dodaj samochód” lub „Dodaj usługę” w stałym panelu.', flags: MessageFlags.Ephemeral });
+  }
+  if (draft.busy) return interaction.reply({ content: 'Ta oferta jest już wysyłana. Sprawdź wybrany kanał.', flags: MessageFlags.Ephemeral });
+  if (action === 'cancel') {
+    offerDrafts.delete(id);
+    return interaction.update({ content: 'Szkic anulowany. Możesz dodać kolejną ofertę ze stałego panelu.', embeds: [], components: [] });
+  }
+  if (action === 'channel') {
+    await interaction.deferUpdate();
+    await offerDestination(interaction, interaction.values[0]);
+    draft.channel = interaction.values[0];
+    return interaction.editReply(draftView(draft, id));
+  }
+  if (action === 'publish') {
+    draft.busy = true;
+    await interaction.deferUpdate();
+    let destination;
+    try { destination = await offerDestination(interaction, draft.channel); }
+    catch (error) { draft.busy = false; throw error; }
+    const sent = await destination.send({ ...imagePayload(draft.photos, draftCard(draft)), components: [contactButton('offer_contact', draft.cars)], allowedMentions: { parse: [] } });
+    offerDrafts.delete(id); webCatalog.expires = 0;
+    return interaction.editReply({ content: `✅ Oferta opublikowana: ${sent.url}\nID do komendy /zdjecia: ${sent.id}\nKolejną ofertę dodasz tym samym przyciskiem w panelu.`, embeds: [], components: [] });
+  }
+}
+
 const commands = [
   new SlashCommandBuilder().setName('bumpy').setDescription('Licznik podbić DISBOARD, ranking i czas następnego podbicia'),
   withPhotos(new SlashCommandBuilder().setName('oferty').setDescription('Oferty samochodów — komenda opiekuna aut')
@@ -501,6 +614,7 @@ client.once(Events.ClientReady, async () => {
     }
     await guild.commands.set(commands);
     startWebsiteCatalog(guild);
+    try { await publishOfferPanel(guild); } catch (error) { console.error("Stały panel ofert:", error.message); }
     console.log(`${BRAND}: bot działa jako ${client.user.tag}`);
     try { await serial('bump', () => checkBumpReminder(guild)); }
     catch (error) { console.error('Bump FivemShop:', error.message); }
@@ -576,6 +690,16 @@ client.on(Events.MessageUpdate, (_old, message) => {
 });
 
 client.on(Events.InteractionCreate, async interaction => {
+  if (interaction.customId?.startsWith('offerpanel:')) {
+    try { await handleOfferPanel(interaction); }
+    catch (error) {
+      console.error('Panel ofert:', error.message);
+      const content = `Nie udało się zakończyć operacji: ${error.message} Jeśli oferta była wysyłana, sprawdź kanał przed ponowieniem.`;
+      if (interaction.deferred || interaction.replied) await interaction.followUp({ content, flags: MessageFlags.Ephemeral }).catch(() => {});
+      else await interaction.reply({ content, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+    return;
+  }
   if (!interaction.isButton() && !interaction.isChatInputCommand()) return;
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -756,3 +880,4 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 client.on(Events.Error, error => console.error('Błąd Discord:', error.message));
 client.login(DISCORD_TOKEN).catch(error => { console.error('Logowanie nieudane:', error.message); process.exitCode = 1; });
+
