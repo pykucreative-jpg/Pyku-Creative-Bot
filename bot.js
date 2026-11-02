@@ -40,6 +40,7 @@ function websiteOffer(message, channel) {
   const card = message.embeds[0];
   if (!card?.title || !/^P\.Y\.K\.U CREATIVE • (Auta FiveM|Oferta FiveM)$/.test(card.footer?.text ?? '')) return null;
   const cars = card.footer.text.includes('Auta FiveM');
+  if (cars && card.fields.some(field => field.name === 'Status' && ['Sprzedane','Wycofane'].includes(field.value))) return null;
   const chosen = card.fields.find(field => field.name === '📂 Kategoria')?.value;
   const category = cars ? (CAR_GROUPS.find(([key, , label]) => chosen === key || chosen === label)
     ?? CAR_GROUPS.find(([, regex]) => regex.test(channel.name.toLowerCase())))?.[0] ?? 'inne-auta' : 'uslugi';
@@ -200,6 +201,90 @@ function imagePayload(photos, first) {
 }
 const OFFER_PANEL_CHANNEL = '1566745743224737812';
 const OFFER_PANEL_MARKER = 'FivemShop • Stały panel ofert v1';
+const CAR_CHANNELS = Object.freeze({ sportowe: '1562442778795970682', sedan: '1562442783371825202', offroad: '1562442788107194489', 'bogate-tune': '1562442792771264532', motocykle: '1562488312424304721', pakiety: '1562442797615939594', suv: '1562995799628058624', coupe: '1562995805369925712', muscle: '1562995843680964698', supersamochody: '1562995855466823730' });
+const canManageCars = userId => [OWNER_ID, CAR_OWNER_ID].includes(userId);
+const carChannelMenu = customId => new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder('Wybierz katalog samochodów')
+  .addOptions(CAR_GROUPS.map(([key, , label]) => ({ label, value: CAR_CHANNELS[key] }))));
+function managedCar(message) {
+  return message?.author?.id === client.user.id && message.embeds[0]?.footer?.text === `${BRAND} • Auta FiveM`;
+}
+async function carOfferSource(interaction, channelId, messageId) {
+  if (!Object.values(CAR_CHANNELS).includes(channelId)) throw new Error('To nie jest kanał katalogu samochodów.');
+  const channel = await offerDestination(interaction, channelId);
+  const message = await channel.messages.fetch(messageId);
+  if (!managedCar(message)) throw new Error('Możesz zarządzać tylko ofertami samochodów tego bota.');
+  return { channel, message };
+}
+function carManageView(message, channelId) {
+  const status = message.embeds[0].fields.find(f => f.name === 'Status')?.value ?? 'Dostępne';
+  return { content: `**Zarządzanie samochodem** · <#${channelId}>\n${message.url}\nStatus: **${status}**`, embeds: message.embeds,
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`offerpanel:caredit:${channelId}:${message.id}`).setLabel('Edytuj ofertę / cenę').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`offerpanel:carstate:${channelId}:${message.id}:sold`).setLabel('Oznacz jako sprzedane').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`offerpanel:carstate:${channelId}:${message.id}:withdrawn`).setLabel('Wycofaj ofertę').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`offerpanel:carstate:${channelId}:${message.id}:active`).setLabel('Przywróć dostępność').setStyle(ButtonStyle.Success))], allowedMentions: { parse: [] } };
+}
+async function handleCarManagement(interaction) {
+  if (!canManageCars(interaction.user.id)) return interaction.reply({ content: 'Panel samochodów jest dostępny dla Ponczula420 i OFFWHITE.', flags: MessageFlags.Ephemeral });
+  const [, action, channelId, messageId, state] = interaction.customId.split(':');
+  if (action === 'manage') return interaction.reply({ content: '**Oferty samochodów**\nWybierz katalog, a następnie ofertę. Obaj możecie zarządzać samochodami.', components: [carChannelMenu('offerpanel:carlist')], flags: MessageFlags.Ephemeral });
+  if (action === 'carlist' || action === 'carmore') {
+    await interaction.deferUpdate();
+    const target = action === 'carlist' ? interaction.values[0] : channelId;
+    if (!Object.values(CAR_CHANNELS).includes(target)) throw new Error('Nieprawidłowy katalog.');
+    const channel = await offerDestination(interaction, target);
+    const page = await channel.messages.fetch({ limit: 25, ...(messageId ? { before: messageId } : {}) });
+    const found = [...page.values()].filter(managedCar);
+    const rows = [carChannelMenu('offerpanel:carlist')];
+    if (found.length) rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`offerpanel:carpick:${target}`).setPlaceholder('Wybierz samochód')
+      .addOptions(found.map(m => ({ label: m.embeds[0].title.slice(0, 100), description: `${m.embeds[0].fields.find(f => f.name === '💰 Cena')?.value ?? 'Cena do ustalenia'} · ${m.embeds[0].fields.find(f => f.name === 'Status')?.value ?? 'Dostępne'}`.slice(0, 100), value: m.id })))));
+    if (page.size === 25) rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`offerpanel:carmore:${target}:${page.last().id}`).setLabel('Starsze wiadomości / oferty').setStyle(ButtonStyle.Secondary)));
+    return interaction.editReply({ content: `**Oferty w <#${target}>**\n${found.length ? 'Wybierz samochód do edycji lub zmiany statusu.' : 'W tej części historii nie ma ofert. Wybierz inny katalog lub starsze wiadomości.'}`, embeds: [], components: rows });
+  }
+  if (action === 'carpick') {
+    await interaction.deferUpdate();
+    const { message } = await carOfferSource(interaction, channelId, interaction.values[0]);
+    return interaction.editReply(carManageView(message, channelId));
+  }
+  if (action === 'caredit') {
+    const { message, channel } = await carOfferSource(interaction, channelId, messageId);
+    const card = message.embeds[0];
+    if (card.fields.some(f => f.name === 'Status' && f.value !== 'Dostępne')) throw new Error('Najpierw przywróć dostępność oferty, aby ją edytować.');
+    const category = CAR_GROUPS.find(([key, , label]) => card.fields.some(f => f.name === '📂 Kategoria' && [key,label].includes(f.value)))
+      ?? CAR_GROUPS.find(([key]) => CAR_CHANNELS[key] === channel.id);
+    const photos = message.embeds.map(e => e.image?.url).filter(Boolean).map((url,i) => ({ url, name: `auto-${i}.${/\.(gif|webp|jpe?g)(?:\?|$)/i.exec(url)?.[1] ?? 'png'}` }));
+    const draft = { owner: interaction.user.id, guild: interaction.guildId, cars: true, name: card.title, description: card.description ?? '', price: card.fields.find(f => f.name === '💰 Cena')?.value ?? '', category: category[0], categoryLabel: category[2], channel: channel.id, photos, created: Date.now(), busy: false, source: { channel: channel.id, id: message.id, edited: message.editedTimestamp ?? null } };
+    cleanOfferDrafts(); offerDrafts.set(interaction.id, draft);
+    return interaction.showModal(offerForm(true, interaction.id, draft).setCustomId(`offerpanel:revise:cars:${interaction.id}`));
+  }
+  if (action === 'carstate' || action === 'carconfirm') {
+    if (!['sold','withdrawn','active'].includes(state)) throw new Error('Nieprawidłowy status.');
+    await interaction.deferUpdate();
+    if (action === 'carstate' && state !== 'active') {
+      await carOfferSource(interaction, channelId, messageId);
+      return interaction.editReply({ content: `**${state === 'sold' ? 'Oznaczyć samochód jako sprzedany?' : 'Wycofać ofertę z katalogu?'}**\nPrzycisk zamówienia zniknie. Oferta pozostanie na kanale z odpowiednim statusem; możesz ją później przywrócić.`, embeds: [], components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`offerpanel:carconfirm:${channelId}:${messageId}:${state}`).setLabel('Potwierdź zmianę statusu').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`offerpanel:carback:${channelId}:${messageId}`).setLabel('Wróć bez zmian').setStyle(ButtonStyle.Secondary))] });
+    }
+    return serial(`car-offer:${channelId}:${messageId}`, async () => {
+      const { message } = await carOfferSource(interaction, channelId, messageId);
+      const card = EmbedBuilder.from(message.embeds[0]);
+      const fields = message.embeds[0].fields.filter(f => f.name !== 'Status' && f.name !== '📩 Kontakt i zamówienia');
+      card.setFields(...fields, { name: 'Status', value: state === 'sold' ? 'Sprzedane' : state === 'withdrawn' ? 'Wycofane' : 'Dostępne' });
+      if (state === 'active') card.addFields({ name: '📩 Kontakt i zamówienia', value: 'Kliknij przycisk poniżej — porozmawiamy prywatnie przez bota.' });
+      card.setColor(state === 'active' ? 0xc7a36b : 0x777777);
+      const updated = await message.edit({ embeds: [card,...message.embeds.slice(1)], components: state === 'active' ? [contactButton('offer_contact', true)] : [], allowedMentions: { parse: [] } });
+      webCatalog.expires = 0;
+      return interaction.editReply(carManageView(updated, channelId));
+    });
+  }
+  if (action === 'carback') {
+    await interaction.deferUpdate();
+    const { message } = await carOfferSource(interaction, channelId, messageId);
+    return interaction.editReply(carManageView(message, channelId));
+  }
+}
+
 const offerDrafts = new Map();
 const draftLifetime = 15 * 60_000;
 function cleanOfferDrafts() {
@@ -207,15 +292,19 @@ function cleanOfferDrafts() {
 }
 setInterval(cleanOfferDrafts, 60_000).unref();
 const serviceGroups = [['skiny', 'Skiny do broni'], ['mody', 'Mody'], ['citizeny', 'Citizeny'], ['ubrania', 'Ubrania'], ['optymalizacja', 'Optymalizacja PC']];
-function offerForm(cars, id) {
-  const text = (key, label, max, paragraph = false) => new LabelBuilder().setLabel(label).setTextInputComponent(
-    new TextInputBuilder().setCustomId(key).setStyle(paragraph ? TextInputStyle.Paragraph : TextInputStyle.Short).setMaxLength(max).setRequired(true));
+function offerForm(cars, id, draft = null) {
+  const text = (key, label, max, paragraph = false) => {
+    const input = new TextInputBuilder().setCustomId(key).setStyle(paragraph ? TextInputStyle.Paragraph : TextInputStyle.Short).setMaxLength(max).setRequired(true);
+    const value = draft?.[key === 'name' ? 'name' : key === 'price' ? 'price' : 'description'];
+    if (value) input.setValue(value);
+    return new LabelBuilder().setLabel(label).setTextInputComponent(input);
+  };
   return new ModalBuilder().setCustomId(`offerpanel:form:${cars ? 'cars' : 'services'}:${id}`).setTitle(cars ? 'Dodaj samochód' : 'Dodaj ofertę usługi')
     .addLabelComponents(text('name', 'Nazwa oferty', 150), text('description', 'Opis', 3000, true), text('price', 'Cena, np. 35 zł', 150),
       new LabelBuilder().setLabel('Kategoria').setStringSelectMenuComponent(new StringSelectMenuBuilder().setCustomId('category').setMinValues(1).setMaxValues(1)
-        .addOptions((cars ? CAR_GROUPS.map(([value, , label]) => ({ label, value })) : serviceGroups.map(([value, label]) => ({ label, value }))))),
-      new LabelBuilder().setLabel('Zdjęcia (od 1 do 10)').setDescription('PNG, JPG, GIF lub WEBP').setFileUploadComponent(
-        new FileUploadBuilder().setCustomId('photos').setMinValues(1).setMaxValues(10).setRequired(true)));
+        .addOptions((cars ? CAR_GROUPS.filter(([key]) => !draft?.source || key === draft.category).map(([value, , label]) => ({ label, value, ...(draft?.category === value ? { default: true } : {}) })) : serviceGroups.map(([value, label]) => ({ label, value }))))),
+      new LabelBuilder().setLabel(draft ? 'Nowe zdjęcia (opcjonalnie)' : 'Zdjęcia (od 1 do 10)').setDescription(draft ? 'Zostaw puste, aby zachować zdjęcia. Dodane pliki zastąpią galerię.' : 'PNG, JPG, GIF lub WEBP').setFileUploadComponent(
+        new FileUploadBuilder().setCustomId('photos').setMinValues(draft ? 0 : 1).setMaxValues(10).setRequired(!draft)));
 }
 function draftCard(draft) {
   return new EmbedBuilder().setColor(0xc7a36b).setAuthor({ name: BRAND }).setTitle(draft.name).setDescription(draft.description)
@@ -225,21 +314,26 @@ function draftCard(draft) {
 }
 function draftView(draft, id) {
   const embeds = [draftCard(draft).setImage(draft.photos[0].url), ...draft.photos.slice(1).map(p => new EmbedBuilder().setImage(p.url))];
-  return { content: `**Podgląd — oferta nie została jeszcze wysłana.**\nKategoria: **${draft.categoryLabel}**\nKanał publikacji: ${draft.channel ? `<#${draft.channel}>` : '**wybierz poniżej**'}\nZdjęć: ${draft.photos.length} • szkic ważny przez 15 minut.`, embeds,
-    components: [new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`offerpanel:channel:${id}`)
-      .setPlaceholder('Wybierz kanał publikacji').setChannelTypes(ChannelType.GuildText).setMinValues(1).setMaxValues(1)),
-      new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`offerpanel:publish:${id}`).setLabel('Opublikuj ofertę').setStyle(ButtonStyle.Success).setDisabled(!draft.channel),
-        new ButtonBuilder().setCustomId(`offerpanel:cancel:${id}`).setLabel('Anuluj szkic').setStyle(ButtonStyle.Secondary))], allowedMentions: { parse: [] } };
+  const controls = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`offerpanel:publish:${id}`).setLabel(draft.source ? 'Zapisz zmiany w ofercie' : 'Opublikuj ofertę').setStyle(ButtonStyle.Success).setDisabled(!draft.channel));
+  if (draft.cars) {
+    if (!draft.source) controls.addComponents(new ButtonBuilder().setCustomId(`offerpanel:publishnext:${id}`).setLabel('Opublikuj i dodaj kolejną').setStyle(ButtonStyle.Primary).setDisabled(!draft.channel));
+    controls.addComponents(new ButtonBuilder().setCustomId(`offerpanel:edit:${id}`).setLabel('Popraw ofertę').setStyle(ButtonStyle.Secondary));
+  }
+  controls.addComponents(new ButtonBuilder().setCustomId(`offerpanel:cancel:${id}`).setLabel('Anuluj szkic').setStyle(ButtonStyle.Secondary));
+  const channelRow = new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`offerpanel:channel:${id}`)
+    .setPlaceholder('Wybierz kanał publikacji').setChannelTypes(ChannelType.GuildText).setMinValues(1).setMaxValues(1).setDisabled(Boolean(draft.source)));
+  return { content: `**Podgląd — ${draft.source ? 'zmiany nie zostały jeszcze zapisane' : 'oferta nie została jeszcze wysłana'}.**\nKategoria: **${draft.categoryLabel}**\nKanał publikacji: ${draft.channel ? `<#${draft.channel}>` : '**wybierz poniżej**'}\nZdjęć: ${draft.photos.length} • szkic ważny przez 15 minut.`, embeds,
+    components: [channelRow, controls], allowedMentions: { parse: [] } };
 }
 async function publishOfferPanel(guild) {
   const channel = await guild.channels.fetch(OFFER_PANEL_CHANNEL);
   if (channel?.type !== ChannelType.GuildText) throw new Error('Kanał stałego panelu ofert nie jest kanałem tekstowym.');
   const history = await channel.messages.fetch({ limit: 100 });
   const existing = history.find(m => m.author.id === client.user.id && m.embeds[0]?.footer?.text === OFFER_PANEL_MARKER);
-  const payload = { embeds: [new EmbedBuilder().setColor(0xc7a36b).setTitle('FivemShop • Dodawanie ofert')
-    .setDescription('**1.** Kliknij przycisk i uzupełnij nazwę, opis, cenę oraz kategorię.\n**2.** Dodaj od 1 do 10 zdjęć z komputera lub telefonu.\n**3.** Wybierz kanał, sprawdź podgląd i kliknij **Opublikuj ofertę**.\n\n🚗 **Samochody — Ponczula420**\n🛠️ **Pozostałe projekty i usługi — OFFWHITE**\n\nFormularz i szkic widzisz tylko Ty. Gotowa oferta pojawi się jako wiadomość bota z przyciskiem zamówienia.').setFooter({ text: OFFER_PANEL_MARKER })],
+  const payload = { embeds: [new EmbedBuilder().setColor(0xc7a36b).setTitle('FivemShop • Panel samochodów')
+    .setDescription('Dodawaj samochody, poprawiaj oferty i zarządzaj dostępnością.\n\n**Nowa oferta** — nazwa, opis, cena, kategoria i do 10 zdjęć. Kanał podpowie się automatycznie.\n**Oferty samochodów** — edycja opisu, ceny i galerii, oznaczanie jako sprzedane lub wycofanie z możliwością przywrócenia.\n\nDostęp: **Ponczula420 i OFFWHITE**. Podgląd i przyciski zarządzania widzi tylko osoba korzystająca z panelu.').setFooter({ text: OFFER_PANEL_MARKER })],
     components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('offerpanel:new:cars').setLabel('Dodaj samochód').setEmoji('🚗').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('offerpanel:new:services').setLabel('Dodaj usługę / projekt').setEmoji('🛠️').setStyle(ButtonStyle.Secondary))], allowedMentions: { parse: [] } };
+      new ButtonBuilder().setCustomId('offerpanel:manage').setLabel('Oferty samochodów').setStyle(ButtonStyle.Secondary))], allowedMentions: { parse: [] } };
   const sent = existing ? await existing.edit(payload) : await channel.send(payload);
   console.log(`Stały panel ofert gotowy: ${sent.url}`);
   return sent;
@@ -258,29 +352,38 @@ async function handleOfferPanel(interaction) {
     return interaction.reply({ content: 'Panel jest dostępny wyłącznie dla obsługi FivemShop.', flags: MessageFlags.Ephemeral });
   }
   const [, action, id, nonce] = interaction.customId.split(':');
+  if (action === 'manage' || action.startsWith('car')) return handleCarManagement(interaction);
   if (action === 'new') {
     const cars = id === 'cars';
-    if ((cars && interaction.user.id !== CAR_OWNER_ID) || (!cars && interaction.user.id === CAR_OWNER_ID)) {
-      return interaction.reply({ content: cars ? 'Samochody publikuje Ponczula420.' : 'Ten dział jest przeznaczony dla OFFWHITE i obsługi usług.', flags: MessageFlags.Ephemeral });
+    if ((cars && !canManageCars(interaction.user.id)) || (!cars && interaction.user.id === CAR_OWNER_ID)) {
+      return interaction.reply({ content: cars ? 'Panel samochodów jest dostępny dla Ponczula420 i OFFWHITE.' : 'Ten dział jest przeznaczony dla OFFWHITE i obsługi usług.', flags: MessageFlags.Ephemeral });
     }
     return interaction.showModal(offerForm(cars, interaction.id));
   }
-  if (action === 'form') {
+  if (action === 'form' || action === 'revise') {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const cars = id === 'cars';
-    if ((cars && interaction.user.id !== CAR_OWNER_ID) || (!cars && interaction.user.id === CAR_OWNER_ID)) throw new Error('Nie masz dostępu do tego działu.');
+    if ((cars && !canManageCars(interaction.user.id)) || (!cars && interaction.user.id === CAR_OWNER_ID)) throw new Error('Nie masz dostępu do tego działu.');
     const name = interaction.fields.getTextInputValue('name').trim();
     const description = interaction.fields.getTextInputValue('description').trim();
     const price = interaction.fields.getTextInputValue('price').trim();
     const category = interaction.fields.getStringSelectValues('category')[0];
     const categoryLabel = cars ? CAR_GROUPS.find(([key]) => key === category)?.[2] : serviceGroups.find(([key]) => key === category)?.[1];
-    const photos = [...(interaction.fields.getUploadedFiles('photos')?.values() ?? [])];
+    const previous = action === 'revise' ? offerDrafts.get(nonce) : null;
+    if (action === 'revise' && (!previous || previous.owner !== interaction.user.id || previous.guild !== interaction.guildId || previous.busy || Date.now() - previous.created > draftLifetime)) throw new Error('Szkic wygasł lub jest już wysyłany.');
+    if (previous?.source && category !== previous.category) throw new Error('W edytowanej ofercie nie można zmieniać katalogu.');
+    const uploaded = [...(interaction.fields.getUploadedFiles('photos')?.values() ?? [])];
+    const photos = uploaded.length ? uploaded : previous?.photos ?? [];
     if (!name || !description || !price || !categoryLabel || !photos.length || photos.length > 10) throw new Error('Uzupełnij wszystkie pola i dodaj od 1 do 10 zdjęć.');
     if (photos.some(p => !/\.(png|jpe?g|gif|webp)$/i.test(p.name ?? '') || (p.contentType && !/^image\//.test(p.contentType)))) throw new Error('Dodaj wyłącznie zdjęcia PNG, JPG, GIF lub WEBP.');
     if (photos.some(p => p.size > (interaction.guild.maximumUploadLimit ?? 10 * 1024 * 1024))) throw new Error('Zdjęcie przekracza limit załącznika tego serwera. Zmniejsz je i otwórz formularz ponownie.');
     cleanOfferDrafts();
     for (const [key, draft] of offerDrafts) if (draft.owner === interaction.user.id && !draft.busy) offerDrafts.delete(key);
-    const draft = { owner: interaction.user.id, guild: interaction.guildId, created: Date.now(), cars, name, description, price, category, categoryLabel, photos, busy: false };
+    const draft = { owner: interaction.user.id, guild: interaction.guildId, created: Date.now(), cars, name, description, price, category, categoryLabel, photos, busy: false, ...(previous?.source ? {source: previous.source} : {}) };
+    if (cars) {
+      draft.channel = previous && previous.category === category ? previous.channel : CAR_CHANNELS[category];
+      try { await offerDestination(interaction, draft.channel); } catch { draft.channel = undefined; }
+    }
     offerDrafts.set(nonce, draft);
     return interaction.editReply(draftView(draft, nonce));
   }
@@ -289,25 +392,38 @@ async function handleOfferPanel(interaction) {
     return interaction.reply({ content: 'Szkic wygasł albo bot został zrestartowany. Kliknij „Dodaj samochód” lub „Dodaj usługę” w stałym panelu.', flags: MessageFlags.Ephemeral });
   }
   if (draft.busy) return interaction.reply({ content: 'Ta oferta jest już wysyłana. Sprawdź wybrany kanał.', flags: MessageFlags.Ephemeral });
+  if (action === 'edit') {
+    if (!draft.cars || !canManageCars(interaction.user.id)) throw new Error('Brak dostępu do panelu samochodów.');
+    return interaction.showModal(offerForm(true, id, draft).setCustomId(`offerpanel:revise:cars:${id}`));
+  }
   if (action === 'cancel') {
     offerDrafts.delete(id);
     return interaction.update({ content: 'Szkic anulowany. Możesz dodać kolejną ofertę ze stałego panelu.', embeds: [], components: [] });
   }
   if (action === 'channel') {
     await interaction.deferUpdate();
+    if (draft.source) throw new Error('Zmieniasz ofertę w jej obecnym kanale.');
     await offerDestination(interaction, interaction.values[0]);
     draft.channel = interaction.values[0];
     return interaction.editReply(draftView(draft, id));
   }
-  if (action === 'publish') {
+  if (action === 'publish' || (action === 'publishnext' && draft.cars && !draft.source)) {
     draft.busy = true;
     await interaction.deferUpdate();
     let destination;
     try { destination = await offerDestination(interaction, draft.channel); }
     catch (error) { draft.busy = false; throw error; }
-    const sent = await destination.send({ ...imagePayload(draft.photos, draftCard(draft)), components: [contactButton('offer_contact', draft.cars)], allowedMentions: { parse: [] } });
+    let sent;
+    if (draft.source) {
+      sent = await serial(`car-offer:${draft.source.channel}:${draft.source.id}`, async () => {
+        const { message } = await carOfferSource(interaction, draft.source.channel, draft.source.id);
+        if ((message.editedTimestamp ?? null) !== draft.source.edited) { draft.busy = false; throw new Error('Oferta została zmieniona przez inną osobę. Otwórz jej aktualną wersję w panelu.'); }
+        return message.edit({ ...imagePayload(draft.photos, draftCard(draft)), attachments: [], components: [contactButton('offer_contact', true)], allowedMentions: { parse: [] } });
+      });
+    } else sent = await destination.send({ ...imagePayload(draft.photos, draftCard(draft)), components: [contactButton('offer_contact', draft.cars)], allowedMentions: { parse: [] } });
     offerDrafts.delete(id); webCatalog.expires = 0;
-    return interaction.editReply({ content: `✅ Oferta opublikowana: ${sent.url}\nID do komendy /zdjecia: ${sent.id}\nKolejną ofertę dodasz tym samym przyciskiem w panelu.`, embeds: [], components: [] });
+    return interaction.editReply({ content: `✅ ${draft.source ? 'Zmiany zapisane' : 'Oferta opublikowana'}: ${sent.url}\nID do komendy /zdjecia: ${sent.id}`, embeds: [],
+      components: draft.cars ? [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('offerpanel:new:cars').setLabel(action === 'publishnext' ? 'Dodaj kolejne auto' : 'Dodaj samochód').setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId('offerpanel:manage').setLabel('Zarządzaj samochodami').setStyle(ButtonStyle.Secondary))] : [] });
   }
 }
 
@@ -764,6 +880,10 @@ client.on(Events.InteractionCreate, async interaction => {
           source = await channel.messages.fetch(messageId);
         }
         if (source.author.id !== client.user.id || !source.embeds[0]?.title) return await interaction.editReply('Nie znaleziono oferty.');
+        if (managedCar(source)) {
+          source = await source.channel.messages.fetch(source.id);
+          if (source.embeds[0].fields.some(f => f.name === 'Status' && ['Sprzedane','Wycofane'].includes(f.value))) return await interaction.editReply('Ta oferta samochodu nie jest już dostępna. Sprawdź aktualny katalog aut.');
+        }
         const title = source.embeds[0].title;
         const price = source.embeds[0].fields.find(f => f.name === '💰 Cena')?.value ?? 'Do ustalenia';
         try {
