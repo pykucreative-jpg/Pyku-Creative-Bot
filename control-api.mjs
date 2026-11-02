@@ -27,7 +27,8 @@ export function createControlApi({ secret, accounts, sendCode, actions, now = Da
   }
   function json(response,status,data) {response.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; frame-ancestors 'none'",'Referrer-Policy':'no-referrer'});response.end(JSON.stringify(data));}
   return async (request,response) => {
-    const path=new URL(request.url,'http://local').pathname;
+    let path;
+    try { path=new URL(request.url,'http://local').pathname; } catch { json(response,400,{error:'Nieprawidłowy adres żądania.'});return true; }
     if(!path.startsWith('/control/v1/'))return false;
     try {
       prune();rate('ip:'+request.socket.remoteAddress,240,60_000);
