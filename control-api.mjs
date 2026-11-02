@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
-const BODY_LIMIT = 26 * 1024 * 1024;
+const BODY_LIMIT = 29 * 1024 * 1024;
 export function createControlApi({ secret, accounts, sendCode, actions, now = Date.now }) {
   if (!secret || secret.length < 16) throw new Error('Control API requires a server secret.');
   const key = createHmac('sha256', secret).update('fivemshop-desktop-control-v1').digest();
