@@ -13,6 +13,7 @@ const SUPPORT_ROLE_ID = '1562454115206955059';
 const VERIFY_ROLE_ID = '1562457525868040192';
 const VERIFY_CHANNEL_ID = '1562457528829214760';
 const WELCOME_CHANNEL_ID = '1562442549099110560';
+const MEMBER_WELCOME_CHANNEL_ID = '1566845033980887060';
 const BUMP_CHANNEL_ID = '1565758802970546206';
 const DISBOARD_ID = '302050872383242240';
 const BUMP_COOLDOWN = 2 * 60 * 60 * 1000;
@@ -30,6 +31,37 @@ const client = new Client({
   partials: [Partials.Channel],
   allowedMentions: { parse: [] },
 });
+const memberWelcomes = new Map();
+function memberWelcomePayload(member, count) {
+  const card = new EmbedBuilder().setColor(0xc7a36b)
+    .setAuthor({name:'FivemShop • Nowa osoba na pokładzie',iconURL:client.user.displayAvatarURL()})
+    .setTitle('Dobrze Cię widzieć! 👋')
+    .setDescription(`Cześć <@${member.id}>! Rozgość się w **FivemShop**.\n\n🏎️ Samochody z charakterem\n🎨 Skiny, mody i citizeny\n👕 Ubrania dla postaci, ekip i firm\n⚡ Optymalizacja komputera\n\nZacznij od weryfikacji, a potem zajrzyj do katalogów. Pytania i zamówienia ogarniesz przez DM do naszego bota.`)
+    .setThumbnail(member.user.displayAvatarURL({size:256}))
+    .addFields({name:'🖤 Fajnie, że jesteś z nami',value:`Jesteś naszym **#${count.toLocaleString('pl-PL')}** członkiem.`,inline:false})
+    .setFooter({text:'FivemShop • Twój styl. Twoje FiveM.'}).setTimestamp(member.joinedTimestamp??Date.now());
+  return {content:`👋 <@${member.id}>, witaj w **FivemShop**!`,embeds:[card],components:[new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('✅ Weryfikacja').setURL(`https://discord.com/channels/${GUILD_ID}/${VERIFY_CHANNEL_ID}`),
+    new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('🏎️ Zobacz samochody').setURL(`https://discord.com/channels/${GUILD_ID}/1562442778795970682`))],allowedMentions:{users:[member.id],parse:[]}};
+}
+async function welcomeNewMember(member) {
+  if (member.guild.id !== GUILD_ID) return;
+  const key = `${member.id}:${member.joinedTimestamp}`;
+  if (memberWelcomes.has(key)) return memberWelcomes.get(key);
+  const count = member.guild.memberCount;
+  const task = (async()=>{
+    const channel = await member.guild.channels.fetch(MEMBER_WELCOME_CHANNEL_ID);
+    if(channel?.type !== ChannelType.GuildText)throw new Error('Nie znaleziono kanału powitań nowych członków.');
+    const me = await member.guild.members.fetchMe();
+    if(!channel.permissionsFor(me)?.has([P.ViewChannel,P.SendMessages,P.EmbedLinks]))throw new Error('Bot potrzebuje uprawnień Wyświetlanie kanału, Wysyłanie wiadomości i Osadzanie linków na kanale powitań.');
+    await channel.send(memberWelcomePayload(member,count));
+    console.log(`Powitanie nowego członka: wysłano; licznik ${count}.`);
+  })();
+  memberWelcomes.set(key,task);
+  if(memberWelcomes.size>500)memberWelcomes.delete(memberWelcomes.keys().next().value);
+  try{await task;}catch(error){memberWelcomes.delete(key);throw error;}
+}
+client.on(Events.GuildMemberAdd, member => {welcomeNewMember(member).catch(error=>console.error('Powitanie nowego członka:',error.message));});
 const BRAND = 'P.Y.K.U CREATIVE';
 const webCatalog = { data: null, expires: 0, pending: null };
 const CAR_GROUPS = [
@@ -1177,5 +1209,16 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 });
 client.on(Events.Error, error => console.error('Błąd Discord:', error.message));
-client.login(DISCORD_TOKEN).catch(error => { console.error('Logowanie nieudane:', error.message); process.exitCode = 1; });
+async function startBot() {
+  try {
+    const application = await client.rest.setToken(DISCORD_TOKEN).get('/applications/@me');
+    // Discord application flags 14/15 indicate permission to request GuildMembers.
+    if (Number(application.flags) & ((1<<14)|(1<<15))) {
+      client.options.intents = client.options.intents.add(GatewayIntentBits.GuildMembers);
+      console.log('Powitania nowych członków: Server Members Intent włączony.');
+    } else console.error('Powitania nowych członków: włącz SERVER MEMBERS INTENT w Discord Developer Portal i uruchom bota ponownie.');
+  } catch(error) { console.error('Sprawdzenie Server Members Intent nie powiodło się:',error.message); }
+  await client.login(DISCORD_TOKEN).catch(error => { console.error('Logowanie nieudane:', error.message); process.exitCode = 1; });
+}
+startBot();
 
