@@ -215,7 +215,11 @@ function offerEmbeds(message) {
   const category = field(104)?.replace(/^\*\*Kategoria\*\*\n/, '');
   const status = field(105)?.replace(/^\*\*Status\*\*\n/, '') ?? 'Dostępne';
   if (!name || !price || !category) return [];
-  const images = root.components.filter(c => c.type === 12).flatMap(c => c.items).map(item => item.media?.url).filter(Boolean);
+  const images = root.components.filter(c => c.type === 12).flatMap(c => c.items).map(item => {
+    const url = item.media?.url;
+    if (url?.startsWith('attachment://')) return message.attachments?.find(a => a.name === url.slice(13))?.url ?? item.media?.proxy_url;
+    return url;
+  }).filter(Boolean);
   const card = { title: name, description, fields: [{ name: '💰 Cena', value: price }, { name: '📂 Kategoria', value: category }, { name: 'Status', value: status }], footer: { text: `${BRAND} • Auta FiveM` } };
   if (images[0]) card.image = { url: images[0] };
   return [card, ...images.slice(1).map(url => ({ image: { url } }))];
