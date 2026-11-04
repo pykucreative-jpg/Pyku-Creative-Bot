@@ -128,7 +128,7 @@ async function loadWebsiteCatalog(guild) {
 }
 function desktopActions(guild) {
   const accounts = { [OWNER_ID]:{name:'OFFWHITE',department:'Projekty i usługi'},[CAR_OWNER_ID]:{name:'Ponczula420',department:'Samochody'} };
-  const session = userId => ({user:{id:userId,...accounts[userId]},categories:CAR_GROUPS.map(([key,,label])=>({key,label,channel:CAR_CHANNELS[key]}))});
+  const session = userId => ({user:{id:userId,...accounts[userId]},categories:orderedCarGroups(guild).map(([key,,label])=>({key,label,channel:CAR_CHANNELS[key]}))});
   const id = value => {if(typeof value!=='string'||!/^\d{15,22}$/.test(value))throw new Error('Nieprawidłowy identyfikator.');return value;};
   const actor = async userId => ({guild,guildId:GUILD_ID,user:{id:userId},member:await guild.members.fetch(userId)});
   const record = message => {const data=carDraftFromMessage(message);return {id:message.id,channel:message.channelId,name:data.name,description:data.description,price:data.price,category:data.category,categoryLabel:data.categoryLabel,status:data.status,photos:data.photos.map(p=>p.url),version:message.editedTimestamp??null,url:message.url};};
@@ -141,7 +141,7 @@ function desktopActions(guild) {
     return {channel,match:open??closed,closed:Boolean(closed),topic};
   }
   return {
-    bootstrap:{run:async userId=>session(userId)},
+    bootstrap:{run:async userId=>{await guild.channels.fetch();return session(userId);}},
     'offers/list':{run:async(userId,data)=>{if(!canManageCars(userId))throw new Error('Brak dostępu do aut.');const key=data.category??'sportowe';if(!CAR_CHANNELS[key])throw new Error('Nieprawidłowa kategoria.');const channel=await offerDestination(await actor(userId),CAR_CHANNELS[key]);const messages=await channel.messages.fetch({limit:25,...(data.before?{before:id(data.before)}:{})});return {offers:[...messages.values()].filter(managedCar).map(record),before:messages.size===25?messages.last().id:null};}},
     'offers/save':{mutation:true,run:async(userId,data)=>{
       if(!canManageCars(userId))throw new Error('Brak dostępu do aut.');
@@ -149,12 +149,12 @@ function desktopActions(guild) {
       if(!name||name.length>150||!description||description.length>3000||!price||price.length>150||!CAR_CHANNELS[data.category])throw new Error('Uzupełnij nazwę, opis, cenę i kategorię.');
       const uploads=uploadedFiles(data.files??[],{imagesOnly:true});
       const interaction=await actor(userId);const channel=await offerDestination(interaction,CAR_CHANNELS[data.category]);
-      return serial(data.id?`car-offer:${channel.id}:${id(data.id)}`:`desktop-new:${userId}`,async()=>{
-        let source,previous;if(data.id){source=(await carOfferSource(interaction,channel.id,id(data.id))).message;if((source.editedTimestamp??null)!==(data.version??null))throw new Error('Oferta została zmieniona. Odśwież ją przed edycją.');previous=carDraftFromMessage(source);if(previous.status!=='Dostępne')throw new Error('Najpierw przywróć dostępność oferty.');}
+      const sourceChannel=data.id?id(data.channel??channel.id):null;
+      return serial(data.id?`car-offer:${sourceChannel}:${id(data.id)}`:`desktop-new:${userId}`,async()=>{
+        let source,previous;if(data.id){source=(await carOfferSource(interaction,sourceChannel,id(data.id))).message;if((source.editedTimestamp??null)!==(data.version??null))throw new Error('Oferta została zmieniona. Odśwież ją przed edycją.');previous=carDraftFromMessage(source);if(previous.status!=='Dostępne')throw new Error('Najpierw przywróć dostępność oferty.');}
         const photos=uploads.length?uploads:previous?.photos??[];if(!photos.length)throw new Error('Dodaj co najmniej jedno zdjęcie.');
         const draft={cars:true,name,description,price,category:data.category,categoryLabel:CAR_GROUPS.find(([key])=>key===data.category)[2],photos};
-        const payload=carListingPayload(draft);
-        const sent=source?await source.edit({...payload,content:null,embeds:[],attachments:[]}):await channel.send(payload);
+        const sent=await saveCarListing(channel,draft,source);
         webCatalog.expires=0;return {offer:record(sent)};
       });
     }},
@@ -167,14 +167,15 @@ function desktopActions(guild) {
       for(const channel of channels.values()){
         if(channel?.type!==ChannelType.GuildText||!/^pyku:(open|offer|closed|closedoffer):/.test(channel.topic??''))continue;
         const closed=/^pyku:closed/.test(channel.topic);if(closed!==Boolean(data.closed))continue;
-        try{const info=await ticketChannel(userId,channel.id,true);const user=await client.users.fetch(info.match[2]);rows.push({id:channel.id,name:user.globalName??user.username,username:user.username,label:ticketLabel(activeTicket(info.topic)),closed,lastMessageId:channel.lastMessageId??null});}catch(error){if(error.status!==403)console.error('Lista rozmów:',channel.id,error.message);}
+        try{const info=await ticketChannel(userId,channel.id,true);const user=await client.users.fetch(info.match[2]);rows.push({id:channel.id,customerId:user.id,name:user.globalName??user.username,username:user.username,label:ticketLabel(activeTicket(info.topic)),closed,lastMessageId:channel.lastMessageId??null});}catch(error){if(error.status!==403)console.error('Lista rozmów:',channel.id,error.message);}
       }
       return {tickets:rows.sort((a,b)=>String(b.lastMessageId??b.id).localeCompare(String(a.lastMessageId??a.id)))};
     }},
     'tickets/messages':{run:async(userId,data)=>{
-      const {channel,closed}=await ticketChannel(userId,data.channel,true);
+      const {channel,closed,match}=await ticketChannel(userId,data.channel,true);
+      const customer=await client.users.fetch(match[2]);
       const messages=await channel.messages.fetch({limit:50,...(data.before?{before:id(data.before)}:{})});
-      return {closed,before:messages.size===50?messages.last().id:null,messages:[...messages.values()].reverse().map(m=>({id:m.id,content:m.content,author:m.author.bot?(m.content.startsWith('**Klient:**')?'customer':m.content.startsWith('**Obsługa')?'staff':'system'):'staff',name:m.author.username,time:m.createdTimestamp,files:[...m.attachments.values()].map(a=>({name:a.name,url:a.url,type:a.contentType??''})),embeds:m.embeds.map(e=>({title:e.title,description:e.description}))}))};
+      return {closed,before:messages.size===50?messages.last().id:null,messages:[...messages.values()].reverse().filter(m=>m.embeds[0]?.footer?.text!==TICKET_PANEL_MARKER).map(m=>ticketMessageRecord(m,customer))};
     }},
     'tickets/reply':{mutation:true,run:async(userId,data)=>serial('tickets',async()=>{
       const {channel,match,topic}=await ticketChannel(userId,data.channel);const text=String(data.text??'').trim();const files=uploadedFiles(data.files??[],{max:3});
@@ -185,11 +186,8 @@ function desktopActions(guild) {
       return {sent:true,messageId:sent.id};
     })},
     'tickets/close':{mutation:true,run:async(userId,data)=>serial('tickets',async()=>{
-      const {channel,match}=await ticketChannel(userId,data.channel);
-      await channel.setTopic(channel.topic.replace(/^pyku:(open|offer):/,`pyku:${match[1]==='offer'?'closedoffer':'closed'}:`));
-      await channel.setName(`zamkniety-${channel.id}`);await channel.send(`Zgłoszenie zamknął ${accounts[userId].name} z aplikacji FivemShop.`);
-      let notified=true;try{const user=await client.users.fetch(match[2]);await user.send('FivemShop: zgłoszenie zostało zamknięte. Napisz ponownie do bota, jeśli potrzebujesz pomocy.');}catch{notified=false;}
-      return {closed:true,notified};
+      const {channel}=await ticketChannel(userId,data.channel);
+      return closeTicket(channel,userId,accounts[userId].name);
     })},
   };
 }
@@ -407,9 +405,27 @@ async function refreshCarListingLayout(guild) {
 }
 
 const CAR_CHANNELS = Object.freeze({ sportowe: '1562442778795970682', sedan: '1562442783371825202', offroad: '1562442788107194489', 'bogate-tune': '1562442792771264532', motocykle: '1562488312424304721', pakiety: '1562442797615939594', suv: '1562995799628058624', coupe: '1562995805369925712', muscle: '1562995843680964698', supersamochody: '1562995855466823730' });
+function orderedCarGroups(guild) {
+  return [...CAR_GROUPS].sort((a,b)=>{
+    const position=key=>guild?.channels?.cache?.get(CAR_CHANNELS[key])?.rawPosition;
+    const ap=position(a[0]),bp=position(b[0]);
+    return (ap??10000+CAR_GROUPS.indexOf(a))-(bp??10000+CAR_GROUPS.indexOf(b));
+  });
+}
+async function saveCarListing(destination,draft,source) {
+  const payload=carListingPayload(draft);
+  if(!source)return destination.send(payload);
+  if(source.channelId===destination.id)return source.edit({...payload,content:null,embeds:[],attachments:[]});
+  const sent=await destination.send(payload);
+  try{await source.delete();}catch{
+    const reverted=await sent.delete().then(()=>true,()=>false);
+    throw new Error(reverted?'Nie udało się usunąć oferty z poprzedniego kanału. Przeniesienie cofnięto; dotychczasowa oferta pozostała bez zmian.':`Oferta powstała na nowym kanale (${sent.url}), ale poprzednia wiadomość nadal istnieje. Sprawdź oba kanały przed ponowieniem.`);
+  }
+  return sent;
+}
 const canManageCars = userId => [OWNER_ID, CAR_OWNER_ID].includes(userId);
-const carChannelMenu = customId => new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder('Wybierz katalog samochodów')
-  .addOptions(CAR_GROUPS.map(([key, , label]) => ({ label, value: CAR_CHANNELS[key] }))));
+const carChannelMenu = (customId,guild) => new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder('Wybierz katalog samochodów')
+  .addOptions(orderedCarGroups(guild).map(([key, , label]) => ({ label, value: CAR_CHANNELS[key] }))));
 function managedCar(message) {
   return message?.author?.id === client.user.id && offerEmbeds(message)[0]?.footer?.text === `${BRAND} • Auta FiveM`;
 }
@@ -432,7 +448,7 @@ function carManageView(message, channelId) {
 async function handleCarManagement(interaction) {
   if (!canManageCars(interaction.user.id)) return interaction.reply({ content: 'Panel samochodów jest dostępny dla Ponczula420 i OFFWHITE.', flags: MessageFlags.Ephemeral });
   const [, action, channelId, messageId, state] = interaction.customId.split(':');
-  if (action === 'manage') return interaction.reply({ content: '**Oferty samochodów**\nWybierz katalog, a następnie ofertę. Obaj możecie zarządzać samochodami.', components: [carChannelMenu('offerpanel:carlist')], flags: MessageFlags.Ephemeral });
+  if (action === 'manage') return interaction.reply({ content: '**Oferty samochodów**\nWybierz katalog, a następnie ofertę. Obaj możecie zarządzać samochodami.', components: [carChannelMenu('offerpanel:carlist',interaction.guild)], flags: MessageFlags.Ephemeral });
   if (action === 'carlist' || action === 'carmore') {
     await interaction.deferUpdate();
     const target = action === 'carlist' ? interaction.values[0] : channelId;
@@ -440,7 +456,7 @@ async function handleCarManagement(interaction) {
     const channel = await offerDestination(interaction, target);
     const page = await channel.messages.fetch({ limit: 25, ...(messageId ? { before: messageId } : {}) });
     const found = [...page.values()].filter(managedCar);
-    const rows = [carChannelMenu('offerpanel:carlist')];
+    const rows = [carChannelMenu('offerpanel:carlist',interaction.guild)];
     if (found.length) rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`offerpanel:carpick:${target}`).setPlaceholder('Wybierz samochód')
       .addOptions(found.map(m => ({ label: offerEmbeds(m)[0].title.slice(0, 100), description: `${offerEmbeds(m)[0].fields.find(f => f.name === '💰 Cena')?.value ?? 'Cena do ustalenia'} · ${offerEmbeds(m)[0].fields.find(f => f.name === 'Status')?.value ?? 'Dostępne'}`.slice(0, 100), value: m.id })))));
     if (page.size === 25) rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`offerpanel:carmore:${target}:${page.last().id}`).setLabel('Starsze wiadomości / oferty').setStyle(ButtonStyle.Secondary)));
@@ -504,7 +520,7 @@ function offerForm(cars, id, draft = null) {
   return new ModalBuilder().setCustomId(`offerpanel:form:${cars ? 'cars' : 'services'}:${id}`).setTitle(cars ? 'Dodaj samochód' : 'Dodaj ofertę usługi')
     .addLabelComponents(text('name', 'Nazwa oferty', 150), text('description', 'Opis', 3000, true), text('price', 'Cena, np. 35 zł', 150),
       new LabelBuilder().setLabel('Kategoria').setStringSelectMenuComponent(new StringSelectMenuBuilder().setCustomId('category').setMinValues(1).setMaxValues(1)
-        .addOptions((cars ? CAR_GROUPS.filter(([key]) => !draft?.source || key === draft.category).map(([value, , label]) => ({ label, value, ...(draft?.category === value ? { default: true } : {}) })) : serviceGroups.map(([value, label]) => ({ label, value }))))),
+        .addOptions((cars ? orderedCarGroups(client.guilds?.cache?.get(GUILD_ID)).map(([value, , label]) => ({ label, value, ...(draft?.category === value ? { default: true } : {}) })) : serviceGroups.map(([value, label]) => ({ label, value }))))),
       new LabelBuilder().setLabel(draft ? 'Nowe zdjęcia (opcjonalnie)' : 'Zdjęcia (od 1 do 10)').setDescription(draft ? 'Zostaw puste, aby zachować zdjęcia. Dodane pliki zastąpią galerię.' : 'PNG, JPG, GIF lub WEBP').setFileUploadComponent(
         new FileUploadBuilder().setCustomId('photos').setMinValues(draft ? 0 : 1).setMaxValues(10).setRequired(!draft)));
 }
@@ -573,7 +589,6 @@ async function handleOfferPanel(interaction) {
     const categoryLabel = cars ? CAR_GROUPS.find(([key]) => key === category)?.[2] : serviceGroups.find(([key]) => key === category)?.[1];
     const previous = action === 'revise' ? offerDrafts.get(nonce) : null;
     if (action === 'revise' && (!previous || previous.owner !== interaction.user.id || previous.guild !== interaction.guildId || previous.busy || Date.now() - previous.created > draftLifetime)) throw new Error('Szkic wygasł lub jest już wysyłany.');
-    if (previous?.source && category !== previous.category) throw new Error('W edytowanej ofercie nie można zmieniać katalogu.');
     const uploaded = [...(interaction.fields.getUploadedFiles('photos')?.values() ?? [])];
     const photos = uploaded.length ? uploaded : previous?.photos ?? [];
     if (!name || !description || !price || !categoryLabel || !photos.length || photos.length > 10) throw new Error('Uzupełnij wszystkie pola i dodaj od 1 do 10 zdjęć.');
@@ -620,7 +635,7 @@ async function handleOfferPanel(interaction) {
       sent = await serial(`car-offer:${draft.source.channel}:${draft.source.id}`, async () => {
         const { message } = await carOfferSource(interaction, draft.source.channel, draft.source.id);
         if ((message.editedTimestamp ?? null) !== draft.source.edited) { draft.busy = false; throw new Error('Oferta została zmieniona przez inną osobę. Otwórz jej aktualną wersję w panelu.'); }
-        return message.edit({ ...carListingPayload(draft), content: null, embeds: [], attachments: [] });
+        return saveCarListing(destination,draft,message).catch(error=>{draft.busy=false;throw error;});
       });
     } else sent = await destination.send(draft.cars ? carListingPayload(draft) : { ...imagePayload(draft.photos, draftCard(draft)), components: [contactButton('offer_contact', false)], allowedMentions: { parse: [] } });
     offerDrafts.delete(id); webCatalog.expires = 0;
@@ -875,6 +890,61 @@ function privateOverwrites(guild, cars = false) {
     { id: client.user.id, type: 1, allow: [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.ManageChannels, P.AttachFiles, P.EmbedLinks] },
   ];
 }
+const TICKET_PANEL_MARKER='FivemShop • Panel zgłoszenia';
+const CUSTOMER_MESSAGE_MARKER='FivemShop • Wiadomość klienta';
+function ticketPanelPayload(channel,user,topic=channel.topic) {
+  const match=activeTicket(topic),closed=!match;
+  const info=match??activeTicket(topic.replace(/^pyku:closedoffer:/,'pyku:offer:').replace(/^pyku:closed:/,'pyku:open:'));
+  const owner=isCarTicket(topic)?CAR_OWNER_ID:OWNER_ID;
+  const card=new EmbedBuilder().setColor(closed?0x777777:0xc7a36b).setTitle(closed?'🔒 Zgłoszenie zamknięte':'💬 Centrum obsługi • FivemShop')
+    .setDescription('Odpowiedzi i załączniki wysłane przez obsługę na tym kanale trafiają do klienta na DM. Historia rozmowy pozostaje w tickecie.')
+    .addFields({name:'👤 Klient',value:`${user.globalName??user.username}\n<@${user.id}> · \`${user.id}\``,inline:false},
+      {name:'📂 Sprawa',value:info?ticketLabel(info):'Zgłoszenie',inline:true},
+      {name:'🛠️ Opiekun',value:`<@${owner}>`,inline:true},
+      {name:'Status',value:closed?'Zamknięte · archiwum':'Otwarte',inline:true}).setFooter({text:TICKET_PANEL_MARKER});
+  return {embeds:[card],content:null,components:closed?[]:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('ticket_close').setLabel('Zamknij ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger))],allowedMentions:{parse:[]}};
+}
+async function ensureTicketPanel(channel,user) {
+  const info=activeTicket(channel.topic)??activeTicket(channel.topic.replace(/^pyku:closedoffer:/,'pyku:offer:').replace(/^pyku:closed:/,'pyku:open:'));
+  if(!info)return;
+  user??=await client.users.fetch(info[2]);
+  const messages=await channel.messages.fetch({limit:100});
+  const existing=messages.find(m=>m.author.id===client.user.id&&(m.embeds[0]?.footer?.text===TICKET_PANEL_MARKER||m.content?.startsWith('Nowe zgłoszenie:')));
+  const payload=ticketPanelPayload(channel,user);
+  return existing?existing.edit(payload):channel.send(payload);
+}
+async function closeTicket(channel,actorId,actorName) {
+  const match=activeTicket(channel.topic);
+  if(!match)throw new Error('Zgłoszenie jest już zamknięte.');
+  if(!await canHandleTicket(actorId,channel.guild,channel.topic))throw Object.assign(new Error('Nie masz dostępu do tej rozmowy.'),{status:403});
+  const user=await client.users.fetch(match[2]);
+  await channel.setTopic(channel.topic.replace(/^pyku:(open|offer):/,`pyku:${match[1]==='offer'?'closedoffer':'closed'}:`));
+  await channel.setName(`zamkniety-${channel.id}`);
+  await channel.send({content:`🔒 Zgłoszenie zamknął **${actorName}**. Historia została zachowana w archiwum.`,allowedMentions:{parse:[]}});
+  try{await ensureTicketPanel(channel,user);}catch(error){console.error('Odświeżenie panelu zamknięcia:',error.message);}
+  const notified=await user.send('FivemShop: zgłoszenie zostało zamknięte. Napisz ponownie do bota, jeśli potrzebujesz pomocy.').then(()=>true,()=>false);
+  return {closed:true,notified};
+}
+async function handleTicketCloseButton(interaction) {
+  const channel=await interaction.guild.channels.fetch(interaction.channelId);
+  if(!activeTicket(channel?.topic))return interaction.editReply({content:'Ten ticket jest już zamknięty.',components:[]});
+  if(!await canHandleTicket(interaction.user.id,interaction.guild,channel.topic))return interaction.editReply('To zgłoszenie należy do drugiego opiekuna.');
+  if(interaction.customId==='ticket_close_cancel')return interaction.editReply({content:'Anulowano zamknięcie. Rozmowa pozostaje otwarta.',components:[]});
+  if(interaction.customId==='ticket_close')return interaction.editReply({content:'**Zamknąć ten ticket?**\nRozmowa trafi do archiwum, a klient otrzyma powiadomienie. Historia zostanie zachowana.',components:[new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('ticket_close_confirm').setLabel('Tak, zamknij ticket').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('ticket_close_cancel').setLabel('Anuluj').setStyle(ButtonStyle.Secondary))]});
+  return serial('tickets',async()=>{const fresh=await interaction.guild.channels.fetch(interaction.channelId);const result=await closeTicket(fresh,interaction.user.id,interaction.user.globalName??interaction.user.username);return interaction.editReply({content:`Ticket zamknięty. Historia pozostaje w archiwum.${result.notified?'':' Nie udało się wysłać klientowi powiadomienia na DM.'}`,components:[]});});
+}
+function ticketMessageRecord(message,customer) {
+  const card=message.embeds.find(e=>e.footer?.text===CUSTOMER_MESSAGE_MARKER);
+  const isCustomer=Boolean(card)||message.content.startsWith('**Klient:**');
+  const staff=message.content.startsWith('**Obsługa')||!message.author.bot;
+  const staffName=/^\*\*Obsługa \(([^\n]+)\)/.exec(message.content)?.[1];
+  const fileURL=card?.image?.url??card?.url;
+  return {id:message.id,content:card?.description??message.content,author:isCustomer?'customer':staff?'staff':'system',name:isCustomer?(card?.author?.name??customer.globalName??customer.username):staff?(staffName??message.member?.displayName??message.author.globalName??message.author.username):'FivemShop',time:message.createdTimestamp,
+    files:[...message.attachments.values()].map(a=>({name:a.name,url:a.url,type:a.contentType??''})).concat(fileURL?[{name:card.title??'Załącznik',url:fileURL,type:card.image?'image/unknown':''}]:[]),
+    embeds:message.embeds.filter(e=>e!==card).map(e=>({title:e.title,description:e.description,fields:e.fields}))};
+}
 async function ticket(user, offerId, reason, carOffer = false) {
   const { guild, channels } = await guildAndChannels();
   const existing = channels.find(c => c?.type === ChannelType.GuildText && c.topic === activeTopic(user.id, offerId, reason, carOffer));
@@ -888,16 +958,18 @@ async function ticket(user, offerId, reason, carOffer = false) {
     name: `${offerId ? 'oferta' : reason?.key ?? 'uslugi'}-${user.id}${offerId ? `-${offerId.slice(-6)}` : ''}`, type: ChannelType.GuildText, parent: category.id,
     topic: activeTopic(user.id, offerId, reason, carOffer), permissionOverwrites: overwrites,
   });
-  await channel.send(`Nowe zgłoszenie: ${user.username} (${user.id}).${reason ? `\nSprawa: **${reason.label}**` : ''}\nOpiekun: ${cars ? CAR_OWNER_ID : OWNER_ID}\nWiadomości i załączniki obsługi na tym kanale automatycznie trafiają klientowi na DM.\n/zamknij kończy rozmowę i zachowuje archiwum.`);
+  await channel.send(ticketPanelPayload(channel,user));
   return channel;
 }
 async function forwardCustomer(message, channel) {
   const text = message.content || '(załącznik / wiadomość bez tekstu)';
-  const prefix = '**Klient:**\n';
-  for (let offset = 0; offset < text.length; offset += 2000 - prefix.length) {
-    await channel.send({ content: prefix + text.slice(offset, offset + 2000 - prefix.length) });
+  const card=()=>{const embed=new EmbedBuilder().setColor(0xa78ac4).setAuthor({name:message.author.globalName??message.author.username,...(message.author.displayAvatarURL?{iconURL:message.author.displayAvatarURL({size:128})}:{})}).setFooter({text:CUSTOMER_MESSAGE_MARKER});if(message.createdTimestamp)embed.setTimestamp(message.createdTimestamp);return embed;};
+  for(let offset=0;offset<text.length;offset+=4000)await channel.send({embeds:[card().setDescription(text.slice(offset,offset+4000))],allowedMentions:{parse:[]}});
+  for(const attachment of message.attachments.values()){
+    const embed=card().setTitle(`📎 ${attachment.name??'Załącznik'}`.slice(0,256)).setURL(attachment.url).setDescription('Załącznik od klienta');
+    if(/^image\//.test(attachment.contentType??'')||/\.(png|jpe?g|gif|webp)(?:\?|$)/i.test(attachment.url))embed.setImage(attachment.url);
+    await channel.send({embeds:[embed],allowedMentions:{parse:[]}});
   }
-  for (const attachment of message.attachments.values()) await channel.send({ content: attachment.url });
 }
 
 client.once(Events.ClientReady, async () => {
@@ -928,9 +1000,12 @@ client.once(Events.ClientReady, async () => {
           if (!parent) parent = await guild.channels.create({ name: CAR_CATEGORY, type: ChannelType.GuildCategory, permissionOverwrites: privateOverwrites(guild, true) });
           if (channel.parentId !== parent.id) await channel.setParent(parent.id, { lockPermissions: false });
         }
+        if(channel.type===ChannelType.GuildText&&activeTicket(channel.topic)){
+          try{await ensureTicketPanel(channel);}catch(error){console.error('Panel istniejącego ticketa:',channel.id,error.message);}
+        }
       }
     }
-    await guild.commands.set(commands);
+    await guild.commands.set(commands.map(command=>command.name==='oferty'?{...command,options:command.options.map(option=>option.name==='kategoria'?{...option,choices:orderedCarGroups(guild).map(([value,,name])=>({name,value}))}:option)}:command));
     startWebsiteCatalog(guild);
     await refreshCarListingLayout(guild);
     try { await publishOfferPanel(guild); } catch (error) { console.error("Stały panel ofert:", error.message); }
@@ -1025,6 +1100,7 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (interaction.isButton()) {
+      if (['ticket_close','ticket_close_confirm','ticket_close_cancel'].includes(interaction.customId)) return await handleTicketCloseButton(interaction);
       if (interaction.customId.startsWith('desktop_login:')) return await showDesktopLoginCode(interaction);
       if (interaction.customId === 'fivemshop_verify') return await interaction.editReply('Panel został zaktualizowany. Przeczytaj regulamin w aktualnym panelu i kliknij „Akceptuję regulamin i weryfikuję się”.');
       if (interaction.customId.startsWith('reason:')) {
@@ -1204,11 +1280,8 @@ client.on(Events.InteractionCreate, async interaction => {
         return await interaction.editReply('Odpowiedź wysłana na DM.');
       }
       if (interaction.commandName === 'zamknij') {
-        await channel.setTopic(channel.topic.replace(/^pyku:(open|offer):/, `pyku:${match[1] === 'offer' ? 'closedoffer' : 'closed'}:`));
-        await channel.setName(`zamkniety-${channel.id}`);
-        const delivered = await user.send(`${BRAND}: zamknięto zgłoszenie ${channel.name}. Aby wrócić do oferty, kliknij ponownie jej przycisk. W sprawie usług napisz na DM lub skorzystaj z panelu.`).then(() => true, () => false);
-        await channel.send(`Zgłoszenie zamknął ${interaction.user.username}. Kanał zachowano jako archiwum.`);
-        await interaction.editReply(`Zgłoszenie zamknięte.${delivered ? '' : ' Nie udało się wysłać klientowi powiadomienia na DM.'}`);
+        const result=await closeTicket(channel,interaction.user.id,interaction.user.globalName??interaction.user.username);
+        await interaction.editReply(`Zgłoszenie zamknięte.${result.notified ? '' : ' Nie udało się wysłać klientowi powiadomienia na DM.'}`);
       }
     });
   } catch (error) {
