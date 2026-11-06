@@ -328,7 +328,7 @@ const offer = (prices = {}, descriptions = {}) => new EmbedBuilder().setColor(0x
     { name: '👕 FIVEM CLOTHING', value: `${descriptions.ubrania || 'T-shirts, hoodies, trousers and other clothing for characters, crews, organisations and businesses.'}\n**Price:**\n${prices.ubrania || defaultPrices.ubrania}` },
     { name: '🚀 PC OPTIMISATION', value: `${descriptions.optymalizacja || 'Settings for FPS and smoother gameplay. Results depend on your hardware and configuration.'}\n**Price:**\n${prices.optymalizacja || defaultPrices.optymalizacja}` },
     { name: '📩 HOW TO ORDER?', value: 'Click **Order a service** and reply to the bot in DMs.\nSend a description, references and your preferred deadline.\nWe confirm the price and scope before starting.' },
-  ).setFooter({ text: 'P.Y.K.U CREATIVE • Indywidualne projekty • Kontakt przez DM' });
+  ).setFooter({ text: 'P.Y.K.U CREATIVE • Custom projects • Contact through DMs' });
 const buttons = () => new ActionRowBuilder().addComponents(
   new ButtonBuilder().setCustomId('order').setLabel('Order a service').setStyle(ButtonStyle.Primary),
   new ButtonBuilder().setCustomId('prices').setLabel('Prices').setStyle(ButtonStyle.Secondary),
@@ -376,17 +376,20 @@ function imagePayload(photos, first) {
 const OFFER_PANEL_CHANNEL = '1566745743224737812';
 const OFFER_PANEL_MARKER = 'FivemShop • Stały panel ofert v1';
 // One public car listing: text, native photo gallery and order button in one container.
+const CAR_LABEL_EN={'Sportowe':'Sports cars','Sedan':'Sedans','Offroad':'Off-road','Bogate tune':'Tuned cars','Motocykle':'Motorcycles','Pakiety aut':'Car packs','SUV':'SUV','Coupe':'Coupes','Muscle':'Muscle cars','Supersamochody':'Supercars'};
 function offerEmbeds(message) {
   if (message.embeds?.length) return message.embeds;
   const root = message.components?.map(c => c.toJSON?.() ?? c).find(c => c.type === 17 && c.id === 2001);
   if (!root) return [];
   const field = id => root.components.find(c => c.type === 10 && c.id === id)?.content;
-  if (field(106) !== '-# FivemShop • Auta FiveM') return [];
+  if (!['-# FivemShop • Auta FiveM','-# FivemShop • FiveM Cars'].includes(field(106))) return [];
   const name = field(101)?.replace(/^#{2,3} /, '');
   const description = field(102) ?? '';
   const price = field(103)?.replace(/^(?:\*\*Cena\*\*\n|### )/, '');
-  const category = field(104)?.replace(/^(?:\*\*Kategoria\*\*\n|-# 🏁 FIVEMSHOP · )/, '');
-  const status = field(105)?.replace(/^\*\*Status\*\*\n/, '') ?? 'Dostępne';
+  const rawCategory = field(104)?.replace(/^(?:\*\*Kategoria\*\*\n|-# 🏁 FIVEMSHOP · )/, '');
+  const category=Object.entries(CAR_LABEL_EN).find(([,en])=>en===rawCategory)?.[0]??rawCategory;
+  const rawStatus = field(105)?.replace(/^\*\*Status\*\*\n/, '') ?? 'Dostępne';
+  const status=({Sold:'Sprzedane',Withdrawn:'Wycofane',Available:'Dostępne'})[rawStatus]??rawStatus;
   if (!name || !price || !category) return [];
   const images = root.components.filter(c => c.type === 12).flatMap(c => c.items).map(item => {
     const url = item.media?.url;
@@ -408,10 +411,10 @@ function carListingPayload(draft, { upload = true } = {}) {
   const status = draft.status ?? 'Dostępne';
   const active = status === 'Dostępne';
   const box = new ContainerBuilder().setId(2001).setAccentColor(active ? 0xc7a36b : 0x777777)
-    .addTextDisplayComponents(new TextDisplayBuilder().setId(104).setContent(`-# 🏁 FIVEMSHOP · ${draft.categoryLabel}`),
+    .addTextDisplayComponents(new TextDisplayBuilder().setId(104).setContent(`-# 🏁 FIVEMSHOP · ${CAR_LABEL_EN[draft.categoryLabel]??draft.categoryLabel}`),
       new TextDisplayBuilder().setId(101).setContent(`## ${draft.name}`),
       new TextDisplayBuilder().setId(103).setContent(`### ${draft.price}`));
-  if (!active) box.addTextDisplayComponents(new TextDisplayBuilder().setId(105).setContent(`**Status**\n${status}`));
+  if (!active) box.addTextDisplayComponents(new TextDisplayBuilder().setId(105).setContent(`**Status**\n${({Sprzedane:'Sold',Wycofane:'Withdrawn',Dostępne:'Available'})[status]??status}`));
   box.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
   if (draft.description) box.addTextDisplayComponents(new TextDisplayBuilder().setId(102).setContent(draft.description));
   const photos = draft.photos.slice(0,10);
@@ -420,7 +423,7 @@ function carListingPayload(draft, { upload = true } = {}) {
     .setURL(upload ? `attachment://${files[i].name}` : p.url).setDescription(`${draft.name} — zdjęcie ${i+1}`.slice(0,1024)))));
   box.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
   if (active) box.addActionRowComponents(contactButton('offer_contact', true));
-  box.addTextDisplayComponents(new TextDisplayBuilder().setId(106).setContent('-# FivemShop • Auta FiveM'));
+  box.addTextDisplayComponents(new TextDisplayBuilder().setId(106).setContent('-# FivemShop • FiveM Cars'));
   return { components: [box], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] }, ...(upload ? { files } : {}) };
 }
 async function refreshCarListingLayout(guild) {
@@ -433,7 +436,7 @@ async function refreshCarListingLayout(guild) {
       for (const message of history.values()) {
         if (!managedCar(message)) continue;
         const container = message.components?.map(c => c.toJSON?.() ?? c).find(c => c.type === 17 && c.id === 2001);
-        if (container?.components[0]?.id === 104 && container.components[0].content?.startsWith('-# 🏁 FIVEMSHOP · ')) continue;
+        if (container?.components.some(c=>c.id===106&&c.content==='-# FivemShop • FiveM Cars')) continue;
         const draft = carDraftFromMessage(message);
         await message.edit({ ...carListingPayload(draft), content: null, embeds: [], attachments: [] });
         updated++;
@@ -949,7 +952,7 @@ async function ensureTicketPanel(channel,user) {
   user??=await client.users.fetch(info[2]);
   const messages=await channel.messages.fetch({limit:100});
   const existing=messages.find(m=>m.author.id===client.user.id&&(m.embeds[0]?.footer?.text===TICKET_PANEL_MARKER||m.content?.startsWith('Nowe zgłoszenie:')));
-  const savedLanguage=existing?.embeds[0]?.fields?.find(f=>f.name==='🌍 Język / Language')?.value;if(savedLanguage)ticketLanguages.set(channel.id,savedLanguage.includes('PL')?'pl':'en');
+  const savedLanguage=existing?.embeds[0]?.fields?.find(f=>f.name==='🌍 Język / Language')?.value;if(savedLanguage){const lang=savedLanguage.includes('PL')?'pl':'en';ticketLanguages.set(channel.id,lang);if(!userLanguages.has(info[2]))userLanguages.set(info[2],lang);}
   const payload=ticketPanelPayload(channel,user);
   return existing?existing.edit(payload):channel.send(payload);
 }
@@ -1146,7 +1149,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (['ticket_close','ticket_close_confirm','ticket_close_cancel'].includes(interaction.customId)) return await handleTicketCloseButton(interaction);
       if (interaction.customId.startsWith('desktop_login:')) return await showDesktopLoginCode(interaction);
       if (interaction.customId === 'fivemshop_verify') return await interaction.editReply('Panel został zaktualizowany. Przeczytaj regulamin w aktualnym panelu i kliknij „Akceptuję regulamin i weryfikuję się”.');
-      if(interaction.customId==='rules_pl')return interaction.editReply({embeds:verificationPanel(null,'pl').embeds});
+      if(interaction.customId==='rules_pl'){userLanguages.set(interaction.user.id,'pl');return interaction.editReply({embeds:verificationPanel(null,'pl').embeds});}
       if(interaction.customId.startsWith('language:')){
         if(interaction.guildId||interaction.message.author.id!==client.user.id)return interaction.editReply('Choose your language in the DM conversation with the bot.');
         const [,lang,messageId]=interaction.customId.split(':');
