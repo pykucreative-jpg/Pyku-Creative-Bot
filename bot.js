@@ -1056,7 +1056,7 @@ client.once(Events.ClientReady, async () => {
     await refreshEnglishServicePanels(guild);
     await guild.commands.set(commands.map(command=>command.name==='oferty'?{...command,options:command.options.map(option=>option.name==='kategoria'?{...option,choices:orderedCarGroups(guild).map(([value,,name])=>({name,value}))}:option)}:command));
     startWebsiteCatalog(guild);
-    await refreshCarListingLayout(guild);
+    refreshCarListingLayout(guild).catch(error=>console.error('English car layout:',error.message));
     try { await publishOfferPanel(guild); } catch (error) { console.error("Stały panel ofert:", error.message); }
     console.log(`${BRAND}: bot działa jako ${client.user.tag}`);
     try { await serial('bump', () => checkBumpReminder(guild)); }
