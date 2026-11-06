@@ -292,8 +292,10 @@ async function refreshEnglishServicePanels(guild){
  for(const channel of (await guild.channels.fetch()).values()){
   if(channel?.type!==ChannelType.GuildText||/^pyku:/.test(channel.topic??'')||!channel.permissionsFor(guild.members.me)?.has([P.ViewChannel,P.ReadMessageHistory]))continue;
   try{for(const message of (await channel.messages.fetch({limit:100})).values()){
-    const card=message.embeds[0];if(message.author.id!==client.user.id||card?.title!=='OFERTA • USŁUGI NA ZAMÓWIENIE')continue;
-    const prices={},descriptions={};for(const field of card.fields){const key=fieldKeys[field.name];if(!key)continue;const parts=field.value.split('**Cena:**');if(parts.length===2){prices[key]=parts[1].trim();descriptions[key]=parts[0].trim();}}
+    const card=message.embeds[0];if(message.author.id!==client.user.id||!['OFERTA • USŁUGI NA ZAMÓWIENIE','CUSTOM SERVICES • FIVEMSHOP'].includes(card?.title)||card?.footer?.text==='P.Y.K.U CREATIVE • Custom projects • Contact through DMs')continue;
+    const prices={},descriptions={};for(const field of card.fields){const key=fieldKeys[field.name]??({'🔫 WEAPON SKINS':'skiny','🛠️ MODS & CITIZEN PACKS':'mody','👕 FIVEM CLOTHING':'ubrania','🚀 PC OPTIMISATION':'optymalizacja'})[field.name];if(!key)continue;const parts=field.value.split(/\*\*(?:Cena|Price):\*\*/);if(parts.length===2){prices[key]=parts[1].trim();descriptions[key]=parts[0].trim();}}
+    for(const key of Object.keys(descriptions))if(['Customowy wygląd broni do FiveM według Twoich inspiracji.','Gotowe zestawy do RP, pojedyncze customowe mody i citizen pod FPS z dbałością o wygląd gry.','Koszulki, bluzy, spodnie i inne ubrania dla postaci, ekip i organizacji.','Ustawienia pod FPS i płynność. Efekty zależą od sprzętu i konfiguracji.'].includes(descriptions[key]))delete descriptions[key];
+    for(const key of Object.keys(prices))for(const [pl,en]of [['Skin ze zdjęciem lub wzorem —','Image or pattern weapon skin —'],['Skin z zawieszką zwisającą po boku, w stylu CS —','Weapon skin with a dangling CS-style charm —'],['Gotowy citizen + mody pod RP —','Ready-to-use RP citizen + mods —'],['Pojedynczy customowy mod —','Individual custom mod —'],['Citizen pod FPS z ładnym wyglądem —','FPS citizen pack with improved visuals —']])prices[key]=prices[key].replace(pl,en);
     await message.edit({embeds:[offer(prices,descriptions)],components:[buttons()],allowedMentions:{parse:[]}});updated++;
   }}catch(error){console.error('English service panels:',channel.id,error.message);}
  }
@@ -850,7 +852,7 @@ async function verificationRole(guild) {
 async function publishWelcome(guild) {
   const channel = await guild.channels.fetch(WELCOME_CHANNEL_ID);
   if (channel?.type !== ChannelType.GuildText) throw new Error('Nie znaleziono kanału powitania.');
-  const marker = 'FivemShop • Powitanie';
+  const marker = 'FivemShop • Welcome';
   const payload = { embeds: [new EmbedBuilder().setColor(0xf0ae42).setTitle('👋 Welcome to FivemShop!')
     .setDescription([
       '**Everything you need to give your FiveM a style of its own.**',
@@ -872,7 +874,7 @@ async function publishWelcome(guild) {
   while (true) {
     const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
     const existing = page.find(message => message.author.id === client.user.id
-      && message.embeds.some(embed => embed.footer?.text === marker));
+      && message.embeds.some(embed => [marker,'FivemShop • Powitanie'].includes(embed.footer?.text)));
     if (existing) {
       await existing.edit(payload);
       console.log(`Powitanie FivemShop: wiadomość gotowa ${existing.id}`);
