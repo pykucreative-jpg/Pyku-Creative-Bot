@@ -440,7 +440,8 @@ async function refreshCarListingLayout(guild) {
         const container = message.components?.map(c => c.toJSON?.() ?? c).find(c => c.type === 17 && c.id === 2001);
         if (container?.components.some(c=>c.id===106&&c.content==='-# FivemShop • FiveM Cars')) continue;
         const draft = carDraftFromMessage(message);
-        await message.edit({ ...carListingPayload(draft), content: null, embeds: [], attachments: [] });
+        draft.photos=draft.photos.map(photo=>{const attached=message.attachments.find(a=>a.url===photo.url);return attached?{...photo,url:`attachment://${attached.name}`}:photo;});
+        await message.edit({ ...carListingPayload(draft,{upload:false}), content: null, embeds: [] });
         updated++;
       }
     } catch (error) { console.error('Układ ogłoszeń aut:', id, error.message); }
