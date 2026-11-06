@@ -34,12 +34,12 @@ const client = new Client({
 const memberWelcomes = new Map();
 function memberWelcomePayload(member, count) {
   const card = new EmbedBuilder().setColor(0xc7a36b)
-    .setAuthor({name:'FivemShop • Nowa osoba na pokładzie',iconURL:client.user.displayAvatarURL()})
-    .setTitle('Dobrze Cię widzieć! 👋')
-    .setDescription(`Cześć <@${member.id}>! Rozgość się w **FivemShop**.\n\n🏎️ Samochody z charakterem\n🎨 Skiny, mody i citizeny\n👕 Ubrania dla postaci, ekip i firm\n⚡ Optymalizacja komputera\n\nZacznij od weryfikacji, a potem zajrzyj do katalogów. Pytania i zamówienia ogarniesz przez DM do naszego bota.`)
+    .setAuthor({name:'FivemShop • A new member has joined',iconURL:client.user.displayAvatarURL()})
+    .setTitle('Great to see you! 👋')
+    .setDescription(`Hi <@${member.id}>! Welcome to **FivemShop**.\n\n🏎️ Cars with character\n🎨 Weapon skins, mods & citizen packs\n👕 Clothing for characters, crews & businesses\n⚡ PC optimisation\n\nStart with verification, then explore the catalogs. DM our bot for questions and orders — English and Polish support are available.`)
     .setThumbnail(member.user.displayAvatarURL({size:256}))
-    .addFields({name:'🖤 Fajnie, że jesteś z nami',value:`Jesteś naszym **#${count.toLocaleString('pl-PL')}** członkiem.`,inline:false})
-    .setFooter({text:'FivemShop • Twój styl. Twoje FiveM.'}).setTimestamp(member.joinedTimestamp??Date.now());
+    .addFields({name:'🖤 Welcome to the community',value:`You are member **#${count.toLocaleString('en-GB')}**.`,inline:false})
+    .setFooter({text:'FivemShop • Your style. Your FiveM.'}).setTimestamp(member.joinedTimestamp??Date.now());
   return {content:`👋 <@${member.id}>, witaj w **FivemShop**!`,embeds:[card],components:[],allowedMentions:{users:[member.id],parse:[]}};
 }
 async function removeMemberWelcomeButtons(guild) {
@@ -47,7 +47,7 @@ async function removeMemberWelcomeButtons(guild) {
   if(channel?.type !== ChannelType.GuildText)return;
   const messages = await channel.messages.fetch({limit:100});
   let updated=0;
-  for(const message of messages.values())if(message.author.id===client.user.id && message.components.length && message.embeds[0]?.author?.name==='FivemShop • Nowa osoba na pokładzie'){
+  for(const message of messages.values())if(message.author.id===client.user.id && message.components.length && message.embeds[0]?.author?.name==='FivemShop • A new member has joined'){
     await message.edit({components:[]});updated++;
   }
   console.log(`Powitania nowych członków: usunięto przyciski z ${updated} wiadomości.`);
@@ -181,7 +181,7 @@ function desktopActions(guild) {
       const {channel,match,topic}=await ticketChannel(userId,data.channel);const text=String(data.text??'').trim();const files=uploadedFiles(data.files??[],{max:3});
       if((!text&&!files.length)||text.length>1800)throw new Error('Wpisz odpowiedź do 1800 znaków lub dodaj załącznik.');
       const user=await client.users.fetch(match[2]);
-      const sent=await user.send({content:`**FivemShop • ${ticketLabel(activeTicket(topic))}**\n${text}`,files:files.map(f=>({attachment:f.attachment,name:f.name})),allowedMentions:{parse:[]}});
+      const sent=await user.send({content:`**FivemShop • ${publicTicketLabel(activeTicket(topic),ticketLanguages.get(channel.id)??'en')}**\n${text}`,files:files.map(f=>({attachment:f.attachment,name:f.name})),allowedMentions:{parse:[]}});
       try{await channel.send({content:`**Obsługa (${accounts[userId].name}) → klient:**\n${text}`,files:files.map(f=>({attachment:f.attachment,name:f.name})),embeds:[new EmbedBuilder().setFooter({text:`FivemShop Desktop • ${data.operationId}`})],allowedMentions:{parse:[]}});}catch{throw new Error(`DM został wysłany (ID ${sent.id}), ale zapis w historii nie powiódł się. Nie wysyłaj ponownie tej odpowiedzi.`);}
       return {sent:true,messageId:sent.id};
     })},
@@ -256,13 +256,52 @@ const activeTopic = (id, offerId, reason, carOffer = false) => offerId ? `pyku:o
 const activeTicket = topic => /^pyku:(open|offer):(\d+)(?::(\d+))?(?::(car))?$/.exec(topic ?? '');
 const isCarTicket = topic => /^pyku:(open|closed):\d+:1$/.test(topic ?? '') || /^pyku:(offer|closedoffer):\d+:\d+:car$/.test(topic ?? '');
 const ticketLabel = match => match[1] === 'offer' ? `Oferta ${match[3].slice(-6)}` : DM_REASONS.find(reason => reason.id === match[3])?.label ?? 'Usługi';
-function reasonMenu(messageId = 'new') {
+function reasonMenu(messageId = 'new',lang='en') {
   return {
-    embeds: [new EmbedBuilder().setColor(0xf0ae42).setTitle('📩 FivemShop • W czym możemy pomóc?')
-      .setDescription('Wybierz, w jakiej sprawie piszesz. Twoja wiadomość i załączniki trafią do odpowiedniego zgłoszenia.\n\nAby później wybrać inną sprawę, napisz **menu**.')],
+    embeds: [new EmbedBuilder().setColor(0xf0ae42).setTitle(lang==='pl'?'📩 FivemShop • W czym możemy pomóc?':'📩 FivemShop • How can we help?')
+      .setDescription(lang==='pl'?'Wybierz, w jakiej sprawie piszesz. Twoja wiadomość i załączniki trafią do odpowiedniego zgłoszenia.\n\nAby później wybrać inną sprawę, napisz **menu**.':'Choose a category. Your message and attachments will reach the right team.\n\nType **menu** to start another request or change language.')],
     components: [0, 3].map(start => new ActionRowBuilder().addComponents(DM_REASONS.slice(start, start + 3).map(reason =>
-      new ButtonBuilder().setCustomId(`reason:${reason.id}:${messageId}`).setLabel(reason.label).setEmoji(reason.emoji).setStyle(ButtonStyle.Secondary)))),
+      new ButtonBuilder().setCustomId(`reason:${reason.id}:${messageId}`).setLabel(lang==='pl'?reason.label:reasonEnglish[reason.key]).setEmoji(reason.emoji).setStyle(ButtonStyle.Secondary)))),
   };
+}
+const userLanguages=new Map(),ticketLanguages=new Map();
+const reasonEnglish={samochody:'Cars',skiny:'Weapon skins',mody:'Mods',citizeny:'Citizen packs',optymalizacja:'PC optimisation',ubrania:'FiveM clothing'};
+const languageOf=id=>userLanguages.get(id)??'en';
+const say=(id,en,pl)=>languageOf(id)==='pl'?pl:en;
+const publicTicketLabel=(match,lang)=>lang==='pl'?ticketLabel(match):match[1]==='offer'?`Offer ${match[3].slice(-6)}`:reasonEnglish[DM_REASONS.find(r=>r.id===match[3])?.key]??'Services';
+function languageMenu(messageId='new'){
+ return {embeds:[new EmbedBuilder().setColor(0xc7a36b).setTitle('🌍 Welcome to FivemShop').setDescription('Choose your support language. Your message and attachments will be kept.\n\nWybierz język obsługi. Twoja wiadomość i załączniki zostaną zachowane.')],components:[new ActionRowBuilder().addComponents(...['en','pl'].map(lang=>new ButtonBuilder().setCustomId(`language:${lang}:${messageId}`).setLabel(lang==='en'?'🇬🇧 English':'🇵🇱 Polski').setStyle(ButtonStyle.Primary)))]};
+}
+async function internationalizeChannels(guild){
+ const names={sportowe:'🏎️・sports-cars',sedan:'🚘・sedans',offroad:'⛰️・off-road','bogate-tune':'🔧・tuned-cars',motocykle:'🏍️・motorcycles',pakiety:'📦・car-packs',suv:'🚙・suv',coupe:'🏁・coupes',muscle:'💪・muscle-cars',supersamochody:'⚡・supercars'};
+ const byId=Object.fromEntries(Object.entries(CAR_CHANNELS).map(([key,id])=>[id,names[key]]));
+ Object.assign(byId,{[WELCOME_CHANNEL_ID]:'👋・welcome',[MEMBER_WELCOME_CHANNEL_ID]:'🎉・new-members',[VERIFY_CHANNEL_ID]:'✅・verification'});
+ const replacements={'regulamin':'rules','otworz-ticket':'open-ticket','otwórz-ticket':'open-ticket','opinie':'reviews','ogloszenia':'announcements','ogłoszenia':'announcements','informacje':'information','skiny-do-broni':'weapon-skins','ubrania':'clothing','optymalizacja':'pc-optimisation','mody-i-citizeny':'mods-and-citizen-packs','oferty':'offers'};
+ let renamed=0;
+ for(const channel of (await guild.channels.fetch()).values()){
+  if(!channel||/^pyku:/.test(channel.topic??'')||[CATEGORY,OFFER_CATEGORY,CAR_CATEGORY].includes(channel.name))continue;
+  let name=byId[channel.id];
+  if(!name){name=channel.name;for(const [pl,en]of Object.entries(replacements))name=name.replace(new RegExp('(^|[・·丨│ ━-])'+pl+'$','i'),(_,prefix)=>prefix+en);if(channel.type===ChannelType.GuildCategory)name=name.replace(/KATALOG AUT/gi,'CAR CATALOG').replace(/INFORMACJE/gi,'INFORMATION');}
+  if(name&&name!==channel.name){try{await channel.setName(name);renamed++;}catch(error){console.error('International channels:',channel.id,error.message);}}
+ }
+ console.log(`International channels: renamed ${renamed}.`);
+}
+async function refreshEnglishServicePanels(guild){
+ const fieldKeys={'🔫 SKINY DO BRONI':'skiny','🛠️ MODY I CITIZENY':'mody','👕 UBRANIA DO FIVEM':'ubrania','🚀 OPTYMALIZACJA KOMPUTERA':'optymalizacja'};
+ let updated=0;
+ for(const channel of (await guild.channels.fetch()).values()){
+  if(channel?.type!==ChannelType.GuildText||/^pyku:/.test(channel.topic??'')||!channel.permissionsFor(guild.members.me)?.has([P.ViewChannel,P.ReadMessageHistory]))continue;
+  try{for(const message of (await channel.messages.fetch({limit:100})).values()){
+    const card=message.embeds[0];if(message.author.id!==client.user.id||card?.title!=='OFERTA • USŁUGI NA ZAMÓWIENIE')continue;
+    const prices={},descriptions={};for(const field of card.fields){const key=fieldKeys[field.name];if(!key)continue;const parts=field.value.split('**Cena:**');if(parts.length===2){prices[key]=parts[1].trim();descriptions[key]=parts[0].trim();}}
+    await message.edit({embeds:[offer(prices,descriptions)],components:[buttons()],allowedMentions:{parse:[]}});updated++;
+  }}catch(error){console.error('English service panels:',channel.id,error.message);}
+ }
+ console.log(`English service panels: updated ${updated}.`);
+}
+function verificationPanel(count,lang='en'){
+ if(lang==='pl')return polishVerificationPanel(count);
+ return {embeds:[new EmbedBuilder().setColor(0xc7a36b).setTitle('✅ Verification • FivemShop').setDescription('Welcome! Read and accept our rules to unlock the server.\n\n**📜 SERVER RULES**\n\n**1. Respect others.** No harassment, threats, discrimination or provocation.\n**2. Keep channels tidy.** No spam, unauthorised advertising or unnecessary mentions.\n**3. Orders.** Contact the bot or use an offer button. Agree on the price, scope and delivery time before work starts.\n**4. Support.** Ponczula420 handles cars; OFFWHITE handles skins, mods, citizen packs, clothing and PC optimisation.\n**5. Safety.** Do not share private data or harmful files. Staff will never ask you to share passwords, tokens or login codes with them.\n**6. Issues.** Use your ticket and avoid duplicate requests.\n**7. Moderation.** Rule violations may lead to a warning, timeout or ban. Discord rules also apply.\n\n**By clicking below, you confirm that you have read and accept these rules.**').addFields({name:'👥 Verified members',value:count===null?'Temporarily unavailable':`**${count}**`})],components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(VERIFY_BUTTON_ID).setLabel('Accept rules & verify').setEmoji('✅').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId('rules_pl').setLabel('🇵🇱 Regulamin po polsku').setStyle(ButtonStyle.Secondary))]};
 }
 const queues = new Map();
 function serial(key, task) {
@@ -275,25 +314,25 @@ const priceFields = [
   ['ubrania', 'Ubrania do FiveM'], ['optymalizacja', 'Optymalizacja komputera'],
 ];
 const defaultPrices = {
-  skiny: 'Skin ze zdjęciem lub wzorem — 10 zł\nSkin z zawieszką zwisającą po boku, w stylu CS — 15 zł',
-  mody: 'Gotowy citizen + mody pod RP — 25 zł\nPojedynczy customowy mod — 10 zł\nCitizen pod FPS z ładnym wyglądem — 20 zł',
+  skiny: 'Image or pattern weapon skin — 10 zł\nWeapon skin with a dangling CS-style charm — 15 zł',
+  mody: 'Ready-to-use RP citizen + mods — 25 zł\nIndividual custom mod — 10 zł\nFPS citizen pack with improved visuals — 20 zł',
   ubrania: '25 zł',
   optymalizacja: '50 zł',
 };
 const offer = (prices = {}, descriptions = {}) => new EmbedBuilder().setColor(0xa855f7)
-  .setAuthor({ name: BRAND }).setTitle('OFERTA • USŁUGI NA ZAMÓWIENIE')
-  .setDescription('**Twój pomysł. Twój styl. Twoje wykonanie.**\nProjekty do FiveM i optymalizacja komputera dopasowane do Twoich wymagań.')
+  .setAuthor({ name: BRAND }).setTitle('CUSTOM SERVICES • FIVEMSHOP')
+  .setDescription('**Your idea. Your style. Made for you.**\nCustom FiveM projects and PC optimisation tailored to your requirements.')
   .addFields(
-    { name: '🔫 SKINY DO BRONI', value: `${descriptions.skiny || 'Customowy wygląd broni do FiveM według Twoich inspiracji.'}\n**Cena:**\n${prices.skiny || defaultPrices.skiny}` },
-    { name: '🛠️ MODY I CITIZENY', value: `${descriptions.mody || 'Gotowe zestawy do RP, pojedyncze customowe mody i citizen pod FPS z dbałością o wygląd gry.'}\n**Cena:**\n${prices.mody || defaultPrices.mody}` },
-    { name: '👕 UBRANIA DO FIVEM', value: `${descriptions.ubrania || 'Koszulki, bluzy, spodnie i inne ubrania dla postaci, ekip i organizacji.'}\n**Cena:**\n${prices.ubrania || defaultPrices.ubrania}` },
-    { name: '🚀 OPTYMALIZACJA KOMPUTERA', value: `${descriptions.optymalizacja || 'Ustawienia pod FPS i płynność. Efekty zależą od sprzętu i konfiguracji.'}\n**Cena:**\n${prices.optymalizacja || defaultPrices.optymalizacja}` },
-    { name: '📩 JAK ZAMÓWIĆ?', value: 'Kliknij **Zamów usługę** i odpowiedz botowi na DM.\nPrześlij opis, inspiracje i oczekiwany termin.\nCenę i zakres potwierdzamy przed rozpoczęciem pracy.' },
+    { name: '🔫 WEAPON SKINS', value: `${descriptions.skiny || 'Custom FiveM weapon skins based on your references.'}\n**Price:**\n${prices.skiny || defaultPrices.skiny}` },
+    { name: '🛠️ MODS & CITIZEN PACKS', value: `${descriptions.mody || 'Ready-to-use RP packs, individual custom mods and FPS citizen packs that keep the game looking good.'}\n**Price:**\n${prices.mody || defaultPrices.mody}` },
+    { name: '👕 FIVEM CLOTHING', value: `${descriptions.ubrania || 'T-shirts, hoodies, trousers and other clothing for characters, crews, organisations and businesses.'}\n**Price:**\n${prices.ubrania || defaultPrices.ubrania}` },
+    { name: '🚀 PC OPTIMISATION', value: `${descriptions.optymalizacja || 'Settings for FPS and smoother gameplay. Results depend on your hardware and configuration.'}\n**Price:**\n${prices.optymalizacja || defaultPrices.optymalizacja}` },
+    { name: '📩 HOW TO ORDER?', value: 'Click **Order a service** and reply to the bot in DMs.\nSend a description, references and your preferred deadline.\nWe confirm the price and scope before starting.' },
   ).setFooter({ text: 'P.Y.K.U CREATIVE • Indywidualne projekty • Kontakt przez DM' });
 const buttons = () => new ActionRowBuilder().addComponents(
-  new ButtonBuilder().setCustomId('order').setLabel('Zamów usługę').setStyle(ButtonStyle.Primary),
-  new ButtonBuilder().setCustomId('prices').setLabel('Cennik').setStyle(ButtonStyle.Secondary),
-  new ButtonBuilder().setCustomId('question').setLabel('Zadaj pytanie').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId('order').setLabel('Order a service').setStyle(ButtonStyle.Primary),
+  new ButtonBuilder().setCustomId('prices').setLabel('Prices').setStyle(ButtonStyle.Secondary),
+  new ButtonBuilder().setCustomId('question').setLabel('Ask a question').setStyle(ButtonStyle.Secondary),
 );
 function withPhotos(command, firstRequired = false) {
   for (let i = 1; i <= 10; i++) command.addAttachmentOption(option => option
@@ -312,7 +351,7 @@ function photosFrom(interaction) {
   return photos;
 }
 const contactButton = (reference = 'offer_contact', cars = false) => new ActionRowBuilder().addComponents(
-  new ButtonBuilder().setCustomId(reference).setLabel(cars ? 'Zapytaj o auto / zamów' : 'Zapytaj o ofertę / zamów').setEmoji('📩').setStyle(ButtonStyle.Primary),
+  new ButtonBuilder().setCustomId(reference).setLabel(cars ? 'Ask about this car / order' : 'Ask about this offer / order').setEmoji('📩').setStyle(ButtonStyle.Primary),
 );
 async function canOperate(userId, guild) {
   if (userId === OWNER_ID || userId === CAR_OWNER_ID) return true;
@@ -767,7 +806,7 @@ function observeBump(message, log = true) {
   }
   if (log) console.log(`Bump FivemShop: ${success ? `udane podbicie; razem ${bumpState.successes.size}` : `czas oczekiwania ${Math.ceil(wait / 60000)} min`} • ${message.id}.`);
 }
-function verificationPanel(count) {
+function polishVerificationPanel(count) {
   return {
     embeds: [new EmbedBuilder().setColor(0x2ecc71).setTitle('✅ Weryfikacja • FivemShop')
       .setDescription([
@@ -809,22 +848,22 @@ async function publishWelcome(guild) {
   const channel = await guild.channels.fetch(WELCOME_CHANNEL_ID);
   if (channel?.type !== ChannelType.GuildText) throw new Error('Nie znaleziono kanału powitania.');
   const marker = 'FivemShop • Powitanie';
-  const payload = { embeds: [new EmbedBuilder().setColor(0xf0ae42).setTitle('👋 Witaj w FivemShop!')
+  const payload = { embeds: [new EmbedBuilder().setColor(0xf0ae42).setTitle('👋 Welcome to FivemShop!')
     .setDescription([
-      '**Wszystko, czego potrzebujesz, by nadać swojemu FiveM własny styl.**',
+      '**Everything you need to give your FiveM a style of its own.**',
       '',
-      '🚗 **Samochody** — sportowe, luksusowe, terenowe i tuningowane.',
-      '🔫 **Skiny do broni** — własne zdjęcia, wzory i zawieszki.',
-      '🛠️ **Mody i citizeny** — pod RP, FPS oraz wygląd gry.',
-      '👕 **Ubrania** — dla Twojej postaci, ekipy, organizacji lub firmy.',
-      '🚀 **Optymalizacja PC** — pod lepszą płynność rozgrywki.',
+      '🚗 **Cars** — sports, luxury, off-road and tuned vehicles.',
+      '🔫 **Weapon skins** — your own images, patterns and charms.',
+      '🛠️ **Mods & citizen packs** — for RP, FPS and game visuals.',
+      '👕 **Clothing** — for your character, crew, organisation or business.',
+      '🚀 **PC optimisation** — for smoother gameplay.',
       '',
-      '**📩 Pytania i zamówienia**',
-      'Kliknij przycisk pod wybraną ofertą lub napisz do bota na DM. Wybierz kategorię, a zgłoszenie trafi do odpowiedniej osoby.',
+      '**📩 Questions & orders**',
+      'Click an offer button or DM the bot. Choose English or Polish, then a category — your ticket will reach the right person.',
       '',
-      '💰 Cenę, zakres i termin realizacji ustalisz z obsługą przed zamówieniem.',
+      '💰 Agree on the price, scope and delivery time with staff before placing an order.',
       '',
-      '**Rozgość się i znajdź coś dla siebie! 🖤**',
+      '**Make yourself at home and find your next upgrade! 🖤**',
     ].join('\n')).setFooter({ text: marker })] };
   let before;
   while (true) {
@@ -901,7 +940,7 @@ function ticketPanelPayload(channel,user,topic=channel.topic) {
     .addFields({name:'👤 Klient',value:`${user.globalName??user.username}\n<@${user.id}> · \`${user.id}\``,inline:false},
       {name:'📂 Sprawa',value:info?ticketLabel(info):'Zgłoszenie',inline:true},
       {name:'🛠️ Opiekun',value:`<@${owner}>`,inline:true},
-      {name:'Status',value:closed?'Zamknięte · archiwum':'Otwarte',inline:true}).setFooter({text:TICKET_PANEL_MARKER});
+      {name:'Status',value:closed?'Zamknięte · archiwum':'Otwarte',inline:true},{name:'🌍 Język / Language',value:(ticketLanguages.get(channel.id)??'en')==='pl'?'Polski · PL':'English · EN',inline:true}).setFooter({text:TICKET_PANEL_MARKER});
   return {embeds:[card],content:null,components:closed?[]:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('ticket_close').setLabel('Zamknij ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger))],allowedMentions:{parse:[]}};
 }
 async function ensureTicketPanel(channel,user) {
@@ -910,6 +949,7 @@ async function ensureTicketPanel(channel,user) {
   user??=await client.users.fetch(info[2]);
   const messages=await channel.messages.fetch({limit:100});
   const existing=messages.find(m=>m.author.id===client.user.id&&(m.embeds[0]?.footer?.text===TICKET_PANEL_MARKER||m.content?.startsWith('Nowe zgłoszenie:')));
+  const savedLanguage=existing?.embeds[0]?.fields?.find(f=>f.name==='🌍 Język / Language')?.value;if(savedLanguage)ticketLanguages.set(channel.id,savedLanguage.includes('PL')?'pl':'en');
   const payload=ticketPanelPayload(channel,user);
   return existing?existing.edit(payload):channel.send(payload);
 }
@@ -922,7 +962,7 @@ async function closeTicket(channel,actorId,actorName) {
   await channel.setName(`zamkniety-${channel.id}`);
   await channel.send({content:`🔒 Zgłoszenie zamknął **${actorName}**. Historia została zachowana w archiwum.`,allowedMentions:{parse:[]}});
   try{await ensureTicketPanel(channel,user);}catch(error){console.error('Odświeżenie panelu zamknięcia:',error.message);}
-  const notified=await user.send('FivemShop: zgłoszenie zostało zamknięte. Napisz ponownie do bota, jeśli potrzebujesz pomocy.').then(()=>true,()=>false);
+  const notified=await user.send((ticketLanguages.get(channel.id)??'en')==='pl'?'FivemShop: zgłoszenie zostało zamknięte. Napisz ponownie do bota, jeśli potrzebujesz pomocy.':'FivemShop: your ticket has been closed. Send the bot a new message if you need help again.').then(()=>true,()=>false);
   return {closed:true,notified};
 }
 async function handleTicketCloseButton(interaction) {
@@ -958,6 +998,7 @@ async function ticket(user, offerId, reason, carOffer = false) {
     name: `${offerId ? 'oferta' : reason?.key ?? 'uslugi'}-${user.id}${offerId ? `-${offerId.slice(-6)}` : ''}`, type: ChannelType.GuildText, parent: category.id,
     topic: activeTopic(user.id, offerId, reason, carOffer), permissionOverwrites: overwrites,
   });
+  ticketLanguages.set(channel.id,languageOf(user.id));
   await channel.send(ticketPanelPayload(channel,user));
   return channel;
 }
@@ -1005,6 +1046,8 @@ client.once(Events.ClientReady, async () => {
         }
       }
     }
+    await internationalizeChannels(guild);
+    await refreshEnglishServicePanels(guild);
     await guild.commands.set(commands.map(command=>command.name==='oferty'?{...command,options:command.options.map(option=>option.name==='kategoria'?{...option,choices:orderedCarGroups(guild).map(([value,,name])=>({name,value}))}:option)}:command));
     startWebsiteCatalog(guild);
     await refreshCarListingLayout(guild);
@@ -1041,7 +1084,7 @@ client.on(Events.MessageCreate, message => {
       if (!match) return;
       if (!message.content && !message.attachments.size) return;
       const user = await client.users.fetch(match[2]);
-      const prefix = `**FivemShop • ${ticketLabel(match)}**\n`;
+      const prefix = `**FivemShop • ${publicTicketLabel(match,ticketLanguages.get(channel.id)??'en')}**\n`;
       const text = message.content || '(załącznik)';
       const size = 2000 - prefix.length;
       for (let offset = 0; offset < text.length; offset += size) {
@@ -1062,7 +1105,7 @@ client.on(Events.MessageCreate, message => {
     const active = [...channels.values()].filter(channel => activeTicket(channel?.topic)?.[2] === message.author.id);
     const isMenu = /^(menu|start)$/i.test(message.content.trim());
     if (isMenu || !active.length || (active.length === 1 && !activeTicket(active[0].topic)?.[3])) {
-      await message.reply(reasonMenu(isMenu ? 'new' : message.id));
+      await message.reply(languageMenu(isMenu ? 'new' : message.id));
       return;
     }
     if (active.length > 1) {
@@ -1070,15 +1113,15 @@ client.on(Events.MessageCreate, message => {
       for (let i = 0; i < active.length; i += 5) rows.push(new ActionRowBuilder().addComponents(active.slice(i, i + 5).map(channel =>
         new ButtonBuilder().setCustomId(`route:${channel.id}:${message.id}`).setLabel(channel.name.slice(0, 80)).setStyle(ButtonStyle.Secondary))));
       if (rows.length > 5) return await message.reply('Masz zbyt wiele aktywnych rozmów. Poproś obsługę o zamknięcie zakończonych zgłoszeń.');
-      await message.reply({ content: 'Do której rozmowy przekazać tę wiadomość? Wybierz zgłoszenie. Aby zacząć nową sprawę, napisz **menu**.', components: rows });
+      await message.reply({ content:say(message.author.id,'Which conversation is this for? Choose a ticket below. Type **menu** to start another request.','Do której rozmowy przekazać tę wiadomość? Wybierz zgłoszenie. Aby zacząć nową sprawę, napisz **menu**.'), components: rows });
       return;
     }
     const channel = active[0] ?? await ticket(message.author);
     await forwardCustomer(message, channel);
-    await message.reply('Wiadomość przekazana do P.Y.K.U CREATIVE. Odpowiedź otrzymasz tutaj.');
+    await message.reply(say(message.author.id,'Your message has been forwarded to FivemShop. We will reply here.','Wiadomość przekazana do FivemShop. Odpowiedź otrzymasz tutaj.'));
   }).catch(async error => {
     console.error('Błąd odbioru zgłoszenia:', error.message);
-    await message.reply('Nie udało się przekazać wiadomości. Spróbuj później lub skontaktuj się z administracją serwera.').catch(() => {});
+    await message.reply(say(message.author.id,'We could not forward your message. Please try again later or contact server staff.','Nie udało się przekazać wiadomości. Spróbuj później lub skontaktuj się z administracją serwera.')).catch(() => {});
   });
 });
 client.on(Events.MessageUpdate, (_old, message) => {
@@ -1103,6 +1146,16 @@ client.on(Events.InteractionCreate, async interaction => {
       if (['ticket_close','ticket_close_confirm','ticket_close_cancel'].includes(interaction.customId)) return await handleTicketCloseButton(interaction);
       if (interaction.customId.startsWith('desktop_login:')) return await showDesktopLoginCode(interaction);
       if (interaction.customId === 'fivemshop_verify') return await interaction.editReply('Panel został zaktualizowany. Przeczytaj regulamin w aktualnym panelu i kliknij „Akceptuję regulamin i weryfikuję się”.');
+      if(interaction.customId==='rules_pl')return interaction.editReply({embeds:verificationPanel(null,'pl').embeds});
+      if(interaction.customId.startsWith('language:')){
+        if(interaction.guildId||interaction.message.author.id!==client.user.id)return interaction.editReply('Choose your language in the DM conversation with the bot.');
+        const [,lang,messageId]=interaction.customId.split(':');
+        if(!['en','pl'].includes(lang)||(messageId!=='new'&&!/^\d+$/.test(messageId)))return interaction.editReply('Invalid language selection. Type menu to start again.');
+        if(messageId!=='new'){const original=await interaction.channel.messages.fetch(messageId);if(original.author.id!==interaction.user.id)return interaction.editReply('This is not your message.');}
+        userLanguages.set(interaction.user.id,lang);
+        await interaction.message.edit({...reasonMenu(messageId,lang),content:null});
+        return interaction.editReply(lang==='pl'?'Wybrano polski. Teraz wybierz kategorię zgłoszenia.':'English selected. Now choose a support category.');
+      }
       if (interaction.customId.startsWith('reason:')) {
         if (interaction.guildId || interaction.message.author.id !== client.user.id) return await interaction.editReply('Wybierz sprawę w prywatnej rozmowie z botem.');
         const [, reasonId, messageId] = interaction.customId.split(':');
@@ -1110,7 +1163,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!reason || (messageId !== 'new' && !/^\d+$/.test(messageId))) return await interaction.editReply('Nieprawidłowy wybór sprawy. Napisz menu.');
         return await serial('tickets', async () => {
           const chooser = await interaction.channel.messages.fetch(interaction.message.id);
-          if (!chooser.components.length) return await interaction.editReply('Sprawa jest już wybrana. Napisz menu, aby wybrać kolejną.');
+          if (!chooser.components.length) return await interaction.editReply(say(interaction.user.id,'This category has already been selected. Type menu to start another request.','Sprawa jest już wybrana. Napisz menu, aby wybrać kolejną.'));
           let original;
           if (messageId !== 'new') {
             original = await interaction.channel.messages.fetch(messageId);
@@ -1118,24 +1171,24 @@ client.on(Events.InteractionCreate, async interaction => {
           }
           const channel = await ticket(interaction.user, undefined, reason);
           if (original) await forwardCustomer(original, channel);
-          await interaction.message.edit({ content: `✅ Wybrano: **${reason.label}**.${original ? ' Twoja wiadomość została przekazana.' : ' Napisz, w czym możemy pomóc.'}`, embeds: [], components: [] });
-          await interaction.editReply(`Wybrana sprawa: ${reason.label}. Dalszą rozmowę prowadzimy tutaj. Aby zmienić sprawę, napisz menu.`);
+          await interaction.message.edit({ content: say(interaction.user.id,`✅ Selected: **${reasonEnglish[reason.key]}**. ${original?'Your message has been forwarded.':'Tell us how we can help.'}`,`✅ Wybrano: **${reason.label}**.${original ? ' Twoja wiadomość została przekazana.' : ' Napisz, w czym możemy pomóc.'}`), embeds: [], components: [] });
+          await interaction.editReply(say(interaction.user.id,`Selected: ${reasonEnglish[reason.key]}. Continue this conversation here. Type menu to start another request.`,`Wybrana sprawa: ${reason.label}. Dalszą rozmowę prowadzimy tutaj. Aby zmienić sprawę, napisz menu.`));
         });
       }
       if (interaction.customId === VERIFY_BUTTON_ID) {
         if (interaction.guildId !== GUILD_ID || interaction.channelId !== VERIFY_CHANNEL_ID
-          || interaction.message.author.id !== client.user.id) return await interaction.editReply('Ten przycisk działa tylko na kanale weryfikacji FivemShop.');
+          || interaction.message.author.id !== client.user.id) return await interaction.editReply(say(interaction.user.id,'This button only works in the FivemShop verification channel.','Ten przycisk działa tylko na kanale weryfikacji FivemShop.'));
         const member = await interaction.guild.members.fetch(interaction.user.id);
-        if (member.roles.cache.has(VERIFY_ROLE_ID)) return await interaction.editReply('✅ Masz już rangę weryfikacji i dostęp do FivemShop.');
+        if (member.roles.cache.has(VERIFY_ROLE_ID)) return await interaction.editReply(say(interaction.user.id,'✅ You are already verified and have access to FivemShop.','✅ Masz już rangę weryfikacji i dostęp do FivemShop.'));
         try {
           const role = await verificationRole(interaction.guild);
           await member.roles.add(role, 'FivemShop — akceptacja regulaminu v1 i weryfikacja');
           await serial('verification', () => publishVerification(interaction.guild))
             .catch(error => console.error('Weryfikacja FivemShop — aktualizacja licznika:', error.message));
-          return await interaction.editReply('✅ Regulamin zaakceptowany. Weryfikacja zakończona! Masz już dostęp do FivemShop.');
+          return await interaction.editReply(say(interaction.user.id,'✅ Rules accepted. Verification complete — welcome to FivemShop!','✅ Regulamin zaakceptowany. Weryfikacja zakończona! Masz już dostęp do FivemShop.'));
         } catch (error) {
           console.error('Weryfikacja FivemShop — nadanie rangi:', error.message);
-          return await interaction.editReply('Nie udało się nadać rangi. Powiadom obsługę: bot musi mieć Zarządzanie rolami i swoją rangę nad rangą weryfikacji.');
+          return await interaction.editReply(say(interaction.user.id,'Verification failed. Please contact staff: the bot needs Manage Roles and a role above the verification role.','Nie udało się nadać rangi. Powiadom obsługę: bot musi mieć Zarządzanie rolami i swoją rangę nad rangą weryfikacji.'));
         }
       }
       if (interaction.customId.startsWith('route:')) {
@@ -1143,53 +1196,55 @@ client.on(Events.InteractionCreate, async interaction => {
         return await serial('tickets', async () => {
           const { guild } = await guildAndChannels();
           const channel = await guild.channels.fetch(channelId);
-          if (activeTicket(channel?.topic)?.[2] !== interaction.user.id) return await interaction.editReply('Zgłoszenie jest zamknięte lub należy do innej osoby.');
+          if (activeTicket(channel?.topic)?.[2] !== interaction.user.id) return await interaction.editReply(say(interaction.user.id,'This ticket is closed or belongs to another person.','Zgłoszenie jest zamknięte lub należy do innej osoby.'));
           const chooser = await interaction.channel.messages.fetch(interaction.message.id);
-          if (!chooser.components.length) return await interaction.editReply('Ta wiadomość została już przekazana.');
+          if (!chooser.components.length) return await interaction.editReply(say(interaction.user.id,'This message has already been forwarded.','Ta wiadomość została już przekazana.'));
           const original = await interaction.channel.messages.fetch(messageId);
           if (original.author.id !== interaction.user.id) return await interaction.editReply('To nie jest Twoja wiadomość.');
           await forwardCustomer(original, channel);
           await interaction.message.edit({ content: `Wiadomość przekazana do: ${channel.name}`, components: [] });
-          await interaction.editReply('Wysłano do wybranego zgłoszenia.');
+          await interaction.editReply(say(interaction.user.id,'Your message was sent to the selected ticket.','Wysłano do wybranego zgłoszenia.'));
         });
       }
-      if (interaction.customId === 'offer_contact' || interaction.customId.startsWith('offer_ref:')) {
+      if (interaction.customId === 'offer_contact' || interaction.customId.startsWith('offer_ref:') || interaction.customId.startsWith('offerlang:')) {
         if (interaction.guildId !== GUILD_ID) return await interaction.editReply('Oferta pochodzi z innego serwera.');
         let source = interaction.message;
-        if (interaction.customId.startsWith('offer_ref:')) {
-          const [, channelId, messageId] = interaction.customId.split(':');
+        if (interaction.customId.startsWith('offer_ref:')||interaction.customId.startsWith('offerlang:')) {
+          const parts=interaction.customId.split(':');const [channelId,messageId]=parts[0]==='offerlang'?parts.slice(2):parts.slice(1);
           const channel = await interaction.guild.channels.fetch(channelId);
           source = await channel.messages.fetch(messageId);
         }
-        if (source.author.id !== client.user.id || !offerEmbeds(source)[0]?.title) return await interaction.editReply('Nie znaleziono oferty.');
+        if(!interaction.customId.startsWith('offerlang:'))return interaction.editReply({content:'🌍 Choose your support language / Wybierz język obsługi:',components:[new ActionRowBuilder().addComponents(...['en','pl'].map(lang=>new ButtonBuilder().setCustomId(`offerlang:${lang}:${source.channelId}:${source.id}`).setLabel(lang==='en'?'🇬🇧 English':'🇵🇱 Polski').setStyle(ButtonStyle.Primary)))]});
+        const selectedLanguage=interaction.customId.split(':')[1];if(!['en','pl'].includes(selectedLanguage))return interaction.editReply('Invalid language.');userLanguages.set(interaction.user.id,selectedLanguage);
+        if (source.author.id !== client.user.id || !offerEmbeds(source)[0]?.title) return await interaction.editReply(say(interaction.user.id,'Offer not found.','Nie znaleziono oferty.'));
         if (managedCar(source)) {
           source = await source.channel.messages.fetch(source.id);
-          if (offerEmbeds(source)[0].fields.some(f => f.name === 'Status' && ['Sprzedane','Wycofane'].includes(f.value))) return await interaction.editReply('Ta oferta samochodu nie jest już dostępna. Sprawdź aktualny katalog aut.');
+          if (offerEmbeds(source)[0].fields.some(f => f.name === 'Status' && ['Sprzedane','Wycofane'].includes(f.value))) return await interaction.editReply(say(interaction.user.id,'This car is no longer available. Please check the current car catalog.','Ta oferta samochodu nie jest już dostępna. Sprawdź aktualny katalog aut.'));
         }
         const title = offerEmbeds(source)[0].title;
         const price = offerEmbeds(source)[0].fields.find(f => f.name === '💰 Cena')?.value ?? 'Do ustalenia';
         try {
-          await interaction.user.send({ content: `**${BRAND} — ${title}**\nCena: ${price}\n${source.url}\n\nTwoje zapytanie trafi do obsługi. Napisz tutaj, co chcesz zamówić lub o co zapytać.`, allowedMentions: { parse: [] } });
-        } catch { return await interaction.editReply('Włącz DM od członków serwera i kliknij ponownie.'); }
+          await interaction.user.send({ content: say(interaction.user.id,`**FivemShop — ${title}**\nPrice: ${price}\n${source.url}\n\nYour request will reach our team. Reply here with your question or order details.`,`**${BRAND} — ${title}**\nCena: ${price}\n${source.url}\n\nTwoje zapytanie trafi do obsługi. Napisz tutaj, co chcesz zamówić lub o co zapytać.`), allowedMentions: { parse: [] } });
+        } catch { return await interaction.editReply(say(interaction.user.id,'Enable DMs from server members and try again.','Włącz DM od członków serwera i kliknij ponownie.')); }
         await serial('tickets', async () => {
           const channel = await ticket(interaction.user, source.id, undefined, offerEmbeds(source)[0]?.footer?.text.includes('Auta FiveM'));
           await channel.send({ embeds: [new EmbedBuilder().setColor(0xa855f7).setTitle('📩 Zapytanie o ofertę')
             .setDescription(`Klient: ${interaction.user.username}\n**${title}**\nCena: ${price}\n${source.url}`)] });
         });
-        return await interaction.editReply('Zgłoszenie otwarte! Dalszą rozmowę poprowadzisz na DM z botem.');
+        return await interaction.editReply(say(interaction.user.id,'Ticket opened! Continue in your DM conversation with the bot.','Zgłoszenie otwarte! Dalszą rozmowę poprowadzisz na DM z botem.'));
       }
       if (interaction.customId === 'prices') {
         const fields = interaction.message.embeds[0]?.fields ?? [];
-        const legacy = fields.find(item => item.name === '💰 Cennik');
-        const summary = fields.filter(item => item.value.includes('**Cena:**')).map(item =>
-          `**${item.name}**\n${item.value.slice(item.value.lastIndexOf('**Cena:**'))}`).join('\n\n');
+        const legacy = fields.find(item => item.name === '💰 Prices');
+        const summary = fields.filter(item => item.value.includes('**Price:**')).map(item =>
+          `**${item.name}**\n${item.value.slice(item.value.lastIndexOf('**Price:**'))}`).join('\n\n');
         return await interaction.editReply({ content: summary || legacy?.value || 'Wycena indywidualna — napisz do bota i opisz zamówienie.', allowedMentions: { parse: [] } });
       }
       if (!['order', 'question'].includes(interaction.customId)) return await interaction.editReply('Nieznany przycisk.');
       try {
-        await interaction.user.send(reasonMenu());
-      } catch { return await interaction.editReply('Nie mogę wysłać Ci DM. Włącz prywatne wiadomości od członków serwera, a następnie napisz bezpośrednio do bota.'); }
-      return await interaction.editReply('Wysłałem Ci DM. Wybierz kategorię sprawy, aby otworzyć zgłoszenie.');
+        await interaction.user.send(languageMenu());
+      } catch { return await interaction.editReply(say(interaction.user.id,'I could not send you a DM. Enable DMs from server members and message the bot directly.','Nie mogę wysłać Ci DM. Włącz prywatne wiadomości od członków serwera, a następnie napisz bezpośrednio do bota.')); }
+      return await interaction.editReply(say(interaction.user.id,'I sent you a DM. Choose your language and support category to open a ticket.','Wysłałem Ci DM. Wybierz kategorię sprawy, aby otworzyć zgłoszenie.'));
     }
     if (interaction.guildId !== GUILD_ID) return await interaction.editReply('Ta komenda działa wyłącznie na serwerze P.Y.K.U CREATIVE.');
     if (interaction.commandName === 'bumpy') {
@@ -1275,7 +1330,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const content = interaction.options.getString('tresc');
         const attachment = interaction.options.getAttachment('plik');
         if (!content && !attachment) return await interaction.editReply('Podaj treść lub plik.');
-        await user.send({ content: `**FivemShop • ${ticketLabel(match)}**\n${content ?? ''}`, files: attachment ? [attachment.url] : [] });
+        await user.send({ content: `**FivemShop • ${publicTicketLabel(match,ticketLanguages.get(channel.id)??'en')}**\n${content ?? ''}`, files: attachment ? [attachment.url] : [] });
         await channel.send({ content: `**Obsługa (${interaction.user.username}) → klient:**\n${content ?? ''}${attachment ? `\n${attachment.url}` : ''}` });
         return await interaction.editReply('Odpowiedź wysłana na DM.');
       }
