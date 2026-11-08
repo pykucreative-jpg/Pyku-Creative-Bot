@@ -1237,7 +1237,9 @@ const catalogSources = () => [
 const CATALOG_COPY = 'FiveShop • PL/EN • ';
 const catalogCopies = new Map();
 const catalogTargets = new Map();
+const pendingCatalogSync = new Map();
 let catalogGuild;
+let catalogHistoryReady = false;
 const catalogCopyMarker = message => message.embeds[0]?.footer?.text ?? message.components
   .map(component => component.toJSON?.() ?? component)
   .find(component => component.type === 17 && component.id === 2001)
@@ -1359,7 +1361,9 @@ async function removeCatalogCopy(id) {
 }
 
 async function setupLanguageCatalog(guild) {
-  if (!['prepare', 'live'].includes(process.env.CATALOG_LANGUAGE_MODE)) return;
+  const mode = process.env.CATALOG_LANGUAGE_MODE;
+  if (!['prepare', 'live'].includes(mode)) return;
+  console.log(`FiveShop PL/EN: start konfiguracji (${mode}).`);
   const me = await guild.members.fetchMe();
   if (!me.permissions.has([P.ManageChannels, P.ManageRoles])) throw new Error('Bot potrzebuje zarządzania kanałami i rolami.');
   await verificationRole(guild);
@@ -1416,6 +1420,7 @@ async function setupLanguageCatalog(guild) {
         if (id) catalogCopies.set(`${lang}:${id}`, copy);
       }
     }
+    console.log(`FiveShop PL/EN: kanały ${lang.toUpperCase()} gotowe.`);
   }
   for (const source of sources) {
     const posts = [];
@@ -1430,9 +1435,13 @@ async function setupLanguageCatalog(guild) {
     for (const message of posts.reverse()) {
       await serial(`catalog-sync:${message.id}`, () => updateCatalogCopy(message, source));
     }
+    console.log(`FiveShop PL/EN: zsynchronizowano kanał ${source.id} (${posts.length} wiadomości źródłowych).`);
   }
+  catalogHistoryReady = true;
+  for (const [message, deleted] of pendingCatalogSync.values()) queueCatalogSync(message, deleted);
+  pendingCatalogSync.clear();
   console.log(`FiveShop PL/EN: przygotowano ${catalogCopies.size} kopii w ${catalogTargets.size} zestawach kanałów.`);
-  if (process.env.CATALOG_LANGUAGE_MODE !== 'live') return;
+  if (mode !== 'live') return;
 
   const verify = await guild.channels.fetch(VERIFY_CHANNEL_ID);
   await verify.permissionOverwrites.edit(VERIFY_ROLE_ID, { ViewChannel: true, ReadMessageHistory: true });
@@ -1487,9 +1496,13 @@ async function setupLanguageCatalog(guild) {
 }
 
 function queueCatalogSync(message, deleted = false) {
-  if (!catalogGuild || message.guildId !== GUILD_ID || !catalogTargets.has(message.channelId)) return;
+  if (!catalogGuild || message.guildId !== GUILD_ID) return;
   const source = catalogSources().find(item => item.id === message.channelId);
   if (!source) return;
+  if (!catalogHistoryReady) {
+    pendingCatalogSync.set(message.id, [message, deleted]);
+    return;
+  }
   serial(`catalog-sync:${message.id}`, async () => {
     if (deleted) return removeCatalogCopy(message.id);
     const fresh = await message.channel.messages.fetch({ message: message.id, force: true }).catch(error => {
@@ -1683,9 +1696,12 @@ client.on(Events.InteractionCreate, async interaction => {
             const newlyVerified = await verifyCatalogLanguage(interaction.guild, interaction.user.id, lang);
             if (newlyVerified) await serial('verification', () => publishVerification(interaction.guild))
               .catch(error => console.error('Weryfikacja FivemShop — aktualizacja licznika:', error.message));
-            return await interaction.editReply(lang === 'pl'
+            const entries = catalogSources().map(item => catalogTargets.get(item.id)?.[lang]).filter(Boolean);
+            const start = entries.slice(-2).map(channel => `<#${channel.id}>`).join(' · ');
+            const message = lang === 'pl'
               ? '✅ Regulamin zaakceptowany. Twój katalog i ogłoszenia są po polsku.'
-              : '✅ Rules accepted. Your catalog and announcements are set to English.');
+              : '✅ Rules accepted. Your catalog and announcements are set to English.';
+            return await interaction.editReply(start ? `${message}\n${start}` : message);
           } catch (error) {
             console.error('Weryfikacja FivemShop — język katalogu:', error.message);
             return await interaction.editReply(lang === 'pl'
