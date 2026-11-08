@@ -22,9 +22,6 @@ const BUMP_REPEAT = 30 * 60 * 1000;
 const BUMP_MARKER = 'FivemShop • Przypomnienie /bump';
 const bumpState = { lastBump: 0, nextAt: 0, lastSignalAt: 0, successes: new Map(), lastReminder: 0, reminders: new Set(), ready: false };
 const VERIFY_BUTTON_ID = 'fivemshop_accept_rules_v1';
-const CATALOG_LANGUAGE_ROLES = { en: process.env.CATALOG_EN_ROLE_ID, pl: process.env.CATALOG_PL_ROLE_ID };
-let catalogLanguageEnabled = Object.values(CATALOG_LANGUAGE_ROLES).every(id => /^\d{17,22}$/.test(id ?? '') && id !== VERIFY_ROLE_ID)
-  && CATALOG_LANGUAGE_ROLES.en !== CATALOG_LANGUAGE_ROLES.pl;
 let verificationMessageId;
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
 if (![DISCORD_TOKEN, GUILD_ID].every(Boolean)) {
@@ -32,7 +29,7 @@ if (![DISCORD_TOKEN, GUILD_ID].every(Boolean)) {
 }
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-  partials: [Partials.Channel, Partials.Message],
+  partials: [Partials.Channel],
   allowedMentions: { parse: [] },
 });
 const memberWelcomes = new Map();
@@ -312,7 +309,7 @@ async function refreshEnglishServicePanels(guild){
 }
 function verificationPanel(count,lang='en'){
  if(lang==='pl')return polishVerificationPanel(count);
- return {embeds:[new EmbedBuilder().setColor(0xc7a36b).setTitle('✅ Verification • FivemShop').setDescription('Welcome! Read and accept our rules to unlock the server.\n\n**📜 SERVER RULES**\n\n**1. Respect others.** No harassment, threats, discrimination or provocation.\n**2. Keep channels tidy.** No spam, unauthorised advertising or unnecessary mentions.\n**3. Orders.** Contact the bot or use an offer button. Agree on the price, scope and delivery time before work starts.\n**4. Support.** Ponczula420 handles cars; OFFWHITE handles skins, mods, citizen packs, clothing and PC optimisation.\n**5. Safety.** Do not share private data or harmful files. Staff will never ask you to share passwords, tokens or login codes with them.\n**6. Issues.** Use your ticket and avoid duplicate requests.\n**7. Moderation.** Rule violations may lead to a warning, timeout or ban. Discord rules also apply.\n\n**By clicking below, you confirm that you have read and accept these rules.**').addFields({name:'👥 Verified members',value:count===null?'Temporarily unavailable':`**${count}**`})],components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(VERIFY_BUTTON_ID).setLabel(catalogLanguageEnabled ? 'Accept rules and choose English' : 'Accept rules & verify').setEmoji('✅').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId('rules_pl').setLabel('🇵🇱 Regulamin po polsku').setStyle(ButtonStyle.Secondary))]};
+ return {embeds:[new EmbedBuilder().setColor(0xc7a36b).setTitle('✅ Verification • FivemShop').setDescription('Welcome! Read and accept our rules to unlock the server.\n\n**📜 SERVER RULES**\n\n**1. Respect others.** No harassment, threats, discrimination or provocation.\n**2. Keep channels tidy.** No spam, unauthorised advertising or unnecessary mentions.\n**3. Orders.** Contact the bot or use an offer button. Agree on the price, scope and delivery time before work starts.\n**4. Support.** Ponczula420 handles cars; OFFWHITE handles skins, mods, citizen packs, clothing and PC optimisation.\n**5. Safety.** Do not share private data or harmful files. Staff will never ask you to share passwords, tokens or login codes with them.\n**6. Issues.** Use your ticket and avoid duplicate requests.\n**7. Moderation.** Rule violations may lead to a warning, timeout or ban. Discord rules also apply.\n\n**By clicking below, you confirm that you have read and accept these rules.**').addFields({name:'👥 Verified members',value:count===null?'Temporarily unavailable':`**${count}**`})],components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(VERIFY_BUTTON_ID).setLabel('Accept rules & verify').setEmoji('✅').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId('rules_pl').setLabel('🇵🇱 Regulamin po polsku').setStyle(ButtonStyle.Secondary))]};
 }
 const queues = new Map();
 function serial(key, task) {
@@ -371,8 +368,7 @@ async function archiveTranslation(guild, original, alternate) {
 }
 async function publishAnnouncement(interaction) {
   if (interaction.user.id === CAR_OWNER_ID) return interaction.editReply('Ogłoszenia publikuje właściciel lub obsługa.');
-  const channel = interaction.options.getChannel('kanal') ?? (catalogLanguageEnabled
-    ? await interaction.guild.channels.fetch('1562442683731935233') : interaction.channel);
+  const channel = interaction.options.getChannel('kanal') ?? interaction.channel;
   if (![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)
       || /^pyku:/.test(channel.topic ?? '')
       || !channel.permissionsFor(interaction.member)?.has([P.ViewChannel, P.SendMessages])) {
@@ -578,25 +574,24 @@ function carDraftFromMessage(message) {
     translation: languageReference(message),
     photos: embeds.map(e => e.image?.url).filter(Boolean).map((url,i) => ({ url, name: `auto-${i}.${/\.(gif|webp|jpe?g)(?:\?|$)/i.exec(url)?.[1] ?? 'png'}` })) };
 }
-function carListingPayload(draft, { upload = true, localized } = {}) {
+function carListingPayload(draft, { upload = true } = {}) {
   const status = draft.status ?? 'Dostępne';
   const active = status === 'Dostępne';
   const box = new ContainerBuilder().setId(2001).setAccentColor(active ? 0xc7a36b : 0x777777)
-    .addTextDisplayComponents(new TextDisplayBuilder().setId(104).setContent(`-# 🏁 FIVEMSHOP · ${localized?.lang === 'pl' ? draft.categoryLabel : CAR_LABEL_EN[draft.categoryLabel]??draft.categoryLabel}`),
+    .addTextDisplayComponents(new TextDisplayBuilder().setId(104).setContent(`-# 🏁 FIVEMSHOP · ${CAR_LABEL_EN[draft.categoryLabel]??draft.categoryLabel}`),
       new TextDisplayBuilder().setId(101).setContent(`## ${draft.name}`),
       new TextDisplayBuilder().setId(103).setContent(`### ${draft.price}`));
-  if (!active) box.addTextDisplayComponents(new TextDisplayBuilder().setId(105).setContent(`**Status**\n${localized?.lang === 'pl' ? status : ({Sprzedane:'Sold',Wycofane:'Withdrawn',Dostępne:'Available'})[status]??status}`));
+  if (!active) box.addTextDisplayComponents(new TextDisplayBuilder().setId(105).setContent(`**Status**\n${({Sprzedane:'Sold',Wycofane:'Withdrawn',Dostępne:'Available'})[status]??status}`));
   box.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
   if (draft.description) box.addTextDisplayComponents(new TextDisplayBuilder().setId(102).setContent(draft.description));
   const photos = draft.photos.slice(0,10);
   const files = upload ? photos.map((p,i) => ({ attachment: p.url, name: `auto-${i}.${p.name.split('.').pop().toLowerCase()}` })) : [];
   if (photos.length) box.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(photos.map((p,i) => new MediaGalleryItemBuilder()
-    .setURL(upload ? `attachment://${files[i].name}` : p.url).setDescription(`${draft.name} — ${localized?.lang === 'en' ? 'photo' : 'zdjęcie'} ${i+1}`.slice(0,1024)))));
+    .setURL(upload ? `attachment://${files[i].name}` : p.url).setDescription(`${draft.name} — zdjęcie ${i+1}`.slice(0,1024)))));
   box.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
-  if (active) box.addActionRowComponents(localized?.order ?? contactButton('offer_contact', true));
+  if (active) box.addActionRowComponents(contactButton('offer_contact', true));
   if (draft.translation) box.addActionRowComponents(postLanguageRow(draft.translation));
-  box.addTextDisplayComponents(new TextDisplayBuilder().setId(106).setContent(localized
-    ? (localized.lang === 'pl' ? '-# FiveShop • Katalog aut' : '-# FiveShop • Car catalog') : '-# FivemShop • FiveM Cars'));
+  box.addTextDisplayComponents(new TextDisplayBuilder().setId(106).setContent('-# FivemShop • FiveM Cars'));
   return { components: [box], flags: MessageFlags.IsComponentsV2, allowedMentions: { parse: [] }, ...(upload ? { files } : {}) };
 }
 async function refreshCarListingLayout(guild) {
@@ -1027,9 +1022,7 @@ function polishVerificationPanel(count) {
       ].join('\n'))
       .addFields({ name: '👥 Zweryfikowane osoby', value: count === null ? 'Licznik chwilowo niedostępny' : `**${count}**`, inline: false })],
     components: [new ActionRowBuilder().addComponents(new ButtonBuilder()
-      .setCustomId(catalogLanguageEnabled ? 'fivemshop_verify_pl' : VERIFY_BUTTON_ID)
-      .setLabel(catalogLanguageEnabled ? 'Akceptuję regulamin • wybieram polski' : 'Akceptuję regulamin i weryfikuję się')
-      .setEmoji('✅').setStyle(ButtonStyle.Success))],
+      .setCustomId(VERIFY_BUTTON_ID).setLabel('Akceptuję regulamin i weryfikuję się').setEmoji('✅').setStyle(ButtonStyle.Success))],
   };
 }
 async function verificationRole(guild) {
@@ -1040,23 +1033,6 @@ async function verificationRole(guild) {
     throw new Error('Bot potrzebuje uprawnienia Zarządzanie rolami i swojej rangi powyżej rangi weryfikacji.');
   }
   return role;
-}
-async function verifyCatalogLanguage(guild, userId, lang) {
-  return serial(`verification-member:${userId}`, async () => {
-    const member = await guild.members.fetch({ user: userId, force: true });
-    const verification = await verificationRole(guild);
-    const role = await guild.roles.fetch(CATALOG_LANGUAGE_ROLES[lang]);
-    const other = await guild.roles.fetch(CATALOG_LANGUAGE_ROLES[lang === 'pl' ? 'en' : 'pl']);
-    if (!role?.editable || role.managed || !other?.editable || other.managed) {
-      throw new Error('Role językowe muszą znajdować się poniżej roli bota.');
-    }
-    if (!member.roles.cache.has(role.id)) await member.roles.add(role, 'FivemShop — wybrany język katalogu');
-    if (member.roles.cache.has(other.id)) await member.roles.remove(other, 'FivemShop — zmiana języka katalogu');
-    const newlyVerified = !member.roles.cache.has(verification.id);
-    if (newlyVerified) await member.roles.add(verification, 'FivemShop — akceptacja regulaminu');
-    userLanguages.set(userId, lang);
-    return newlyVerified;
-  });
 }
 async function publishWelcome(guild) {
   const channel = await guild.channels.fetch(WELCOME_CHANNEL_ID);
@@ -1227,301 +1203,70 @@ async function forwardCustomer(message, channel) {
   }
 }
 
-const catalogSources = () => [
-  ...orderedCarGroups(catalogGuild).map(([key, , pl]) => ({
-    id: CAR_CHANNELS[key], kind: 'car', names: { pl, en: CAR_LABEL_EN[pl] },
-  })),
-  { id: '1565082996489457805', kind: 'service', names: { pl: 'oferty-usług', en: 'service-offers' } },
-  { id: '1562442683731935233', kind: 'announcement', names: { pl: 'ogłoszenia', en: 'announcements' } },
-];
-const CATALOG_COPY = 'FiveShop • PL/EN • ';
-const catalogCopies = new Map();
-const catalogTargets = new Map();
-const pendingCatalogSync = new Map();
-let catalogGuild;
-let catalogHistoryReady = false;
-const catalogCopyMarker = message => message.embeds[0]?.footer?.text ?? message.components
-  .map(component => component.toJSON?.() ?? component)
-  .find(component => component.type === 17 && component.id === 2001)
-  ?.components.find(component => component.id === 107)?.content.replace(/^-# /, '');
-
-async function* catalogHistory(channel) {
-  let before;
-  while (true) {
-    const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
-    yield* page.values();
-    if (page.size < 100) return;
-    before = page.last().id;
-  }
-}
-
-async function catalogCard(message, source) {
-  const card = offerEmbeds(message)[0];
-  if (source.kind === 'car' && !managedCar(message)) return null;
-  if (source.kind === 'service' && message.author.id === client.user.id && card?.title === 'CUSTOM SERVICES • FIVEMSHOP') {
-    return { en: card, pl: serviceLanguageCard(card, 'pl').toJSON(), panel: true };
-  }
-  const offer = message.author.id === client.user.id && /^P\.Y\.K\.U CREATIVE • (Auta FiveM|Oferta FiveM)$/.test(card?.footer?.text ?? '');
-  const announcement = message.author.id === client.user.id && card?.footer?.text === ANNOUNCEMENT_MARKER;
-  if (!offer && !announcement && (message.author.bot || message.webhookId || !message.content?.trim())) return null;
-  const original = { title: card?.title ?? (source.kind === 'announcement' ? 'FiveShop' : source.names.pl), description: card?.description ?? message.content ?? '' };
-  const [lang = 'pl', translationId] = languageReference(message)?.split(':') ?? [];
-  const main = lang === 'en' ? 'en' : 'pl';
-  const other = main === 'en' ? 'pl' : 'en';
-  let alternate;
-  if (translationId && /^\d{17,22}$/.test(translationId)) {
-    const archive = await message.guild.channels.fetch(OFFER_PANEL_CHANNEL);
-    const saved = await archive.messages.fetch(translationId).catch(error => {
-      if (error.code !== 10008) throw error;
-      return null;
-    });
-    const translation = saved?.embeds[0];
-    if (saved?.author.id === client.user.id && translation?.footer?.text === TRANSLATION_MARKER + postFingerprint(original.title, original.description)) {
-      alternate = { title: translation.title, description: translation.description };
-    }
-  }
-  const price = card?.fields.find(field => field.name === '💰 Cena')?.value;
-  const status = card?.fields.find(field => field.name === 'Status')?.value;
-  const photos = (offer ? offerEmbeds(message).map(embed => embed.image?.url).filter(Boolean) :
-    [...message.attachments.values()].filter(file => /^image\//.test(file.contentType ?? '')).map(file => file.url)).slice(0, 10);
-  return {
-    [main]: original,
-    [other]: alternate ?? {
-      title: offer ? original.title : 'FiveShop',
-      description: other === 'pl' ? 'Polski opis jest w przygotowaniu.' : 'English description coming soon.',
-    },
-    offer, price, status, photos,
-  };
-}
-
-function catalogCopyPayload(message, source, entry, lang) {
-  const pl = lang === 'pl';
-  const version = entry[lang];
-  const marker = CATALOG_COPY + message.id + ':' + (message.editedTimestamp ?? 0);
-  const orderButton = entry.offer && (!entry.status || entry.status === 'Dostępne');
-  const order = orderButton ? new ActionRowBuilder().addComponents(new ButtonBuilder()
-    .setCustomId(`offerlang:${lang}:${message.channelId}:${message.id}`)
-    .setLabel(pl ? 'Zapytaj / zamów' : 'Ask / order').setEmoji('📩').setStyle(ButtonStyle.Primary)) : null;
-  const photos = (entry.photos ?? []).map((url, index) => ({
-    url, name: `catalog-${index}.${/\.(png|jpe?g|gif|webp)(?:\?|$)/i.exec(url)?.[1] ?? 'png'}`,
-  }));
-  if (source.kind === 'car') {
-    const payload = carListingPayload({
-      name: version.title, description: version.description, price: entry.price ?? (pl ? 'Do ustalenia' : 'Ask for price'),
-      status: entry.status, categoryLabel: source.names.pl, photos,
-    }, { localized: { lang, order } });
-    payload.components[0].addTextDisplayComponents(new TextDisplayBuilder().setId(107).setContent('-# ' + marker));
-    return payload;
-  }
-  const card = entry.panel ? new EmbedBuilder(version) : new EmbedBuilder()
-    .setColor(entry.status && entry.status !== 'Dostępne' ? 0x777777 : 0xc7a36b)
-    .setAuthor({ name: 'FiveShop • ' + source.names[lang] })
-    .setTitle(version.title.slice(0, 256));
-  if (!entry.panel) {
-    if (version.description) card.setDescription(version.description.slice(0, 4096));
-    if (entry.price) card.addFields({ name: pl ? '💰 Cena' : '💰 Price', value: entry.price, inline: true });
-    if (entry.status && entry.status !== 'Dostępne') card.addFields({
-      name: 'Status', value: pl ? entry.status : ({ Sprzedane: 'Sold', Wycofane: 'Withdrawn' })[entry.status] ?? entry.status, inline: true,
-    });
-  }
-  card.setFooter({ text: marker });
-  const components = entry.panel ? [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('order')
-    .setLabel(pl ? 'Zamów usługę' : 'Order a service').setStyle(ButtonStyle.Primary))]
-    : order ? [order] : [];
-  return { ...imagePayload(photos, card), components, allowedMentions: { parse: [] } };
-}
-
-async function updateCatalogCopy(message, source, force = false) {
-  const pair = catalogTargets.get(source.id);
-  if (!pair) return;
-  const marker = CATALOG_COPY + message.id + ':' + (message.editedTimestamp ?? 0);
-  if (!force && ['pl', 'en'].every(lang => catalogCopies.has(`${lang}:${message.id}`) && catalogCopyMarker(catalogCopies.get(`${lang}:${message.id}`)) === marker)) return;
-  const entry = await catalogCard(message, source);
-  if (!entry) return;
-  for (const lang of ['pl', 'en']) {
-    const key = `${lang}:${message.id}`;
-    const existing = catalogCopies.get(key);
-    if (!force && existing && catalogCopyMarker(existing) === marker) continue;
-    const payload = catalogCopyPayload(message, source, entry, lang);
-    const posted = existing ? await existing.edit({ ...payload, attachments: [] }).catch(error => {
-      if (error.code !== 10008) throw error;
-      return pair[lang].send(payload);
-    }) : await pair[lang].send(payload);
-    catalogCopies.set(key, posted);
-  }
-}
-
-async function removeCatalogCopy(id) {
-  for (const lang of ['pl', 'en']) {
-    const key = `${lang}:${id}`;
-    const existing = catalogCopies.get(key);
-    if (existing) await existing.delete().catch(error => { if (error.code !== 10008) throw error; });
-    catalogCopies.delete(key);
-  }
-}
-
-async function setupLanguageCatalog(guild) {
-  const mode = process.env.CATALOG_LANGUAGE_MODE;
-  if (!['prepare', 'live'].includes(mode)) return;
-  console.log(`FiveShop PL/EN: start konfiguracji (${mode}).`);
-  const me = await guild.members.fetchMe();
-  if (!me.permissions.has([P.ManageChannels, P.ManageRoles])) throw new Error('Bot potrzebuje zarządzania kanałami i rolami.');
-  await verificationRole(guild);
-  catalogGuild = guild;
-  const channels = await guild.channels.fetch();
-  const sources = catalogSources();
-  for (const source of sources) {
-    const channel = channels.get(source.id);
-    if (![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel?.type)
-        || /^pyku:/.test(channel.topic ?? '')
-        || !channel.permissionsFor(me)?.has([P.ViewChannel, P.ReadMessageHistory, P.ManageChannels, P.ManageRoles])) {
-      throw new Error(`Nie można przygotować katalogu z kanału ${source.id}.`);
-    }
-  }
-
-  const roles = await guild.roles.fetch();
-  const roleFor = {};
-  for (const lang of ['pl', 'en']) {
-    const name = `FiveShop • ${lang.toUpperCase()} (katalog)`;
-    const named = [...roles.values()].filter(role => role.name === name);
-    if (named.length > 1) throw new Error(`Znaleziono kilka ról o nazwie ${name}.`);
-    const role = named[0] ?? await guild.roles.create({ name, permissions: [], reason: 'FiveShop — wybór języka katalogu' });
-    if (!role.editable || role.managed || role.permissions.bitfield !== 0n) throw new Error(`Rola ${name} nie jest dostępna dla bota.`);
-    roleFor[lang] = role;
-  }
-  const read = [P.ViewChannel, P.ReadMessageHistory];
-  const staff = [
-    { id: me.id, type: 1, allow: [...read, P.SendMessages, P.EmbedLinks, P.AttachFiles, P.ManageChannels, P.ManageRoles] },
-    { id: OWNER_ID, type: 1, allow: [...read, P.SendMessages] },
-    { id: CAR_OWNER_ID, type: 1, allow: [...read, P.SendMessages] },
-    { id: SUPPORT_ROLE_ID, type: 0, allow: read },
-  ];
-  for (const lang of ['pl', 'en']) {
-    const name = `FiveShop · ${lang.toUpperCase()}`;
-    const visibility = [
-      { id: guild.id, type: 0, deny: [P.ViewChannel] }, ...staff,
-      { id: roleFor[lang].id, type: 0, allow: read, deny: [P.SendMessages, P.CreatePublicThreads, P.CreatePrivateThreads, P.SendMessagesInThreads] },
-    ];
-    const found = [...channels.values()].filter(channel => channel.type === ChannelType.GuildCategory && channel.name === name);
-    if (found.length > 1) throw new Error(`Znaleziono kilka kategorii ${name}.`);
-    const parent = found[0] ?? await guild.channels.create({ name, type: ChannelType.GuildCategory, permissionOverwrites: visibility });
-    for (const source of sources) {
-      const topic = `fiveshop:catalog:${lang}:${source.id}`;
-      const existing = [...channels.values()].find(channel => channel.parentId === parent.id && channel.topic === topic);
-      const target = existing ?? await guild.channels.create({
-        name: source.names[lang].toLowerCase().replaceAll(' ', '-'), type: ChannelType.GuildText,
-        parent: parent.id, topic, permissionOverwrites: visibility,
-      });
-      if (!catalogTargets.has(source.id)) catalogTargets.set(source.id, {});
-      catalogTargets.get(source.id)[lang] = target;
-      for await (const copy of catalogHistory(target)) {
-        if (copy.author.id !== client.user.id) continue;
-        const id = catalogCopyMarker(copy)?.match(/^FiveShop • PL\/EN • (\d+):\d+$/)?.[1];
-        if (id) catalogCopies.set(`${lang}:${id}`, copy);
-      }
-    }
-    console.log(`FiveShop PL/EN: kanały ${lang.toUpperCase()} gotowe.`);
-  }
-  for (const source of sources) {
-    const posts = [];
-    for await (const message of catalogHistory(channels.get(source.id))) posts.push(message);
-    const present = new Set(posts.map(message => message.id));
-    const pair = catalogTargets.get(source.id);
-    for (const [key, copy] of catalogCopies) {
-      if ([pair.en.id, pair.pl.id].includes(copy.channelId) && !present.has(key.split(':')[1])) {
-        await removeCatalogCopy(key.split(':')[1]);
-      }
-    }
-    for (const message of posts.reverse()) {
-      await serial(`catalog-sync:${message.id}`, () => updateCatalogCopy(message, source));
-    }
-    console.log(`FiveShop PL/EN: zsynchronizowano kanał ${source.id} (${posts.length} wiadomości źródłowych).`);
-  }
-  catalogHistoryReady = true;
-  for (const [message, deleted] of pendingCatalogSync.values()) queueCatalogSync(message, deleted);
-  pendingCatalogSync.clear();
-  console.log(`FiveShop PL/EN: przygotowano ${catalogCopies.size} kopii w ${catalogTargets.size} zestawach kanałów.`);
-  if (mode !== 'live') return;
-
-  const verify = await guild.channels.fetch(VERIFY_CHANNEL_ID);
-  await verify.permissionOverwrites.edit(VERIFY_ROLE_ID, { ViewChannel: true, ReadMessageHistory: true });
-  CATALOG_LANGUAGE_ROLES.pl = roleFor.pl.id;
-  CATALOG_LANGUAGE_ROLES.en = roleFor.en.id;
-  catalogLanguageEnabled = true;
-  try {
-    await serial('verification', () => publishVerification(guild));
-  } catch (error) {
-    catalogLanguageEnabled = false;
-    throw error;
-  }
-  const changed = [];
-  try {
-    for (const source of sources) {
-      const channel = channels.get(source.id);
-      const original = [...channel.permissionOverwrites.cache.values()];
-      const keepAccess = new Set(staff.map(item => item.id));
-      const next = new Map(original.map(overwrite => [overwrite.id, {
-        id: overwrite.id, type: overwrite.type,
-        allow: keepAccess.has(overwrite.id) ? overwrite.allow.bitfield : overwrite.allow.bitfield & ~P.ViewChannel,
-        deny: overwrite.deny.bitfield,
-      }]));
-      for (const entry of staff) {
-        const existing = next.get(entry.id);
-        const allow = entry.allow.reduce((bits, permission) => bits | permission, 0n);
-        next.set(entry.id, { id: entry.id, type: entry.type,
-          allow: (existing?.allow ?? 0n) | allow, deny: (existing?.deny ?? 0n) & ~allow });
-      }
-      for (const id of [guild.id, VERIFY_ROLE_ID]) {
-        const existing = next.get(id);
-        next.set(id, { id, type: 0, allow: existing?.allow ?? 0n, deny: (existing?.deny ?? 0n) | P.ViewChannel });
-      }
-      if (original.length === next.size && original.every(item => {
-        const expected = next.get(item.id);
-        return expected.allow === item.allow.bitfield && expected.deny === item.deny.bitfield;
-      })) continue;
-      await channel.permissionOverwrites.set([...next.values()], 'FiveShop — katalog według języka');
-      changed.push({ channel, original });
-    }
-  } catch (error) {
-    for (const { channel, original } of changed.reverse()) {
-      await channel.permissionOverwrites.set(original, 'FiveShop — przywrócenie poprzedniego dostępu').catch(restore => {
-        console.error('FiveShop PL/EN — przywrócenie uprawnień:', channel.id, restore.message);
-      });
-    }
-    catalogLanguageEnabled = false;
-    await serial('verification', () => publishVerification(guild)).catch(() => {});
-    throw error;
-  }
-  console.log('FiveShop PL/EN: wybór języka aktywny, katalogi źródłowe dostępne dla obsługi.');
-}
-
-function queueCatalogSync(message, deleted = false) {
-  if (!catalogGuild || message.guildId !== GUILD_ID) return;
-  const source = catalogSources().find(item => item.id === message.channelId);
-  if (!source) return;
-  if (!catalogHistoryReady) {
-    pendingCatalogSync.set(message.id, [message, deleted]);
-    return;
-  }
-  serial(`catalog-sync:${message.id}`, async () => {
-    if (deleted) return removeCatalogCopy(message.id);
-    const fresh = await message.channel.messages.fetch({ message: message.id, force: true }).catch(error => {
-      if (error.code !== 10008) throw error;
-      return null;
-    });
-    if (fresh) await updateCatalogCopy(fresh, source);
-    else await removeCatalogCopy(message.id);
-  }).catch(error => console.error('FiveShop PL/EN — synchronizacja:', message.id, error.message));
-}
-client.on(Events.MessageCreate, message => queueCatalogSync(message));
-client.on(Events.MessageUpdate, (_, message) => queueCatalogSync(message));
-client.on(Events.MessageDelete, message => queueCatalogSync(message, true));
-
-
 client.once(Events.ClientReady, async () => {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
     await guild.members.fetch(OWNER_ID);
+
+    try {
+      const since = Date.parse('2026-11-08T09:21:00Z');
+      const sourceIds = new Set([...Object.values(CAR_CHANNELS), '1565082996489457805', '1562442683731935233']);
+      const names = new Set(['FiveShop · PL', 'FiveShop · EN']);
+      const roleNames = new Set(['FiveShop • PL (katalog)', 'FiveShop • EN (katalog)']);
+      const channels = await guild.channels.fetch();
+      const parents = [...channels.values()].filter(channel => channel?.type === ChannelType.GuildCategory && names.has(channel.name));
+      const parentIds = new Set(parents.map(channel => channel.id));
+      const ownedIds = async type => {
+        const result = new Set();
+        let before;
+        try {
+          while (true) {
+            const log = await guild.fetchAuditLogs({ type, limit: 100, ...(before ? { before } : {}) });
+            for (const entry of log.entries.values()) {
+              if (entry.executorId === client.user.id && entry.createdTimestamp >= since) result.add(entry.targetId);
+            }
+            const last = log.entries.last();
+            if (log.entries.size < 100 || last.createdTimestamp < since) break;
+            before = last.id;
+          }
+        } catch (error) { console.error('FiveShop cleanup — audit:', error.message); }
+        return result;
+      };
+      const [ownedChannels, ownedRoles] = await Promise.all([ownedIds(10), ownedIds(30)]);
+      let removed = 0;
+      const left = [];
+      for (const channel of channels.values()) {
+        if (!channel || channel.type !== ChannelType.GuildText || !parentIds.has(channel.parentId)) continue;
+        const tag = /^fiveshop:catalog:(pl|en):(\d+)$/.exec(channel.topic ?? '');
+        if (!tag || !sourceIds.has(tag[2]) || channel.createdTimestamp < since || sourceIds.has(channel.id)) continue;
+        await channel.delete('FiveShop — anulowanie osobnych katalogów językowych');
+        removed++;
+      }
+      const remaining = await guild.channels.fetch();
+      for (const parent of parents) {
+        if (ownedChannels.has(parent.id) && ![...remaining.values()].some(channel => channel?.parentId === parent.id)) {
+          await parent.delete('FiveShop — usunięcie pustej kategorii z anulowanej konfiguracji');
+          removed++;
+        } else {
+          left.push(parent.id);
+        }
+      }
+      const roles = await guild.roles.fetch();
+      const counts = await client.rest.get(`/guilds/${guild.id}/roles/member-counts`).catch(() => null);
+      let removedRoles = 0;
+      for (const role of roles.values()) {
+        if (!roleNames.has(role.name) || !ownedRoles.has(role.id) || !role.editable || role.permissions.bitfield !== 0n) continue;
+        if (counts && (counts[role.id] ?? 0) === 0) {
+          await role.delete('FiveShop — anulowanie nieużywanej roli językowej');
+          removedRoles++;
+        }
+      }
+      const rolesLeft = (await guild.roles.fetch()).filter(role => roleNames.has(role.name)).size;
+      console.log('FiveShop cleanup complete:', JSON.stringify({ removed, removedRoles, rolesLeft, left }));
+    } catch (error) {
+      console.error('FiveShop cleanup failed:', error.message);
+    }
+
     const channels = await guild.channels.fetch();
     for (const channel of channels.values()) {
       if (channel && ((channel.type === ChannelType.GuildCategory && [CATEGORY, OFFER_CATEGORY, CAR_CATEGORY].includes(channel.name))
@@ -1570,7 +1315,6 @@ client.once(Events.ClientReady, async () => {
       await verificationRole(guild);
       console.log('Weryfikacja FivemShop: uprawnienia do nadawania rangi poprawne.');
     } catch (error) { console.error('Weryfikacja FivemShop — uprawnienia:', error.message); }
-    setupLanguageCatalog(guild).catch(error => console.error('FiveShop PL/EN — konfiguracja:', error.message));
     try { await publishVerification(guild); }
     catch (error) { console.error('Weryfikacja FivemShop — publikacja:', error.message); }
     setInterval(() => serial('verification', () => publishVerification(guild))
@@ -1653,12 +1397,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (['ticket_close','ticket_close_confirm','ticket_close_cancel'].includes(interaction.customId)) return await handleTicketCloseButton(interaction);
       if (interaction.customId.startsWith('desktop_login:')) return await showDesktopLoginCode(interaction);
       if (interaction.customId === 'fivemshop_verify') return await interaction.editReply('Panel został zaktualizowany. Przeczytaj regulamin w aktualnym panelu i kliknij „Akceptuję regulamin i weryfikuję się”.');
-      if (interaction.customId === 'rules_pl') {
-        const panel = verificationPanel(null, 'pl');
-        if (catalogLanguageEnabled) return interaction.editReply(panel);
-        userLanguages.set(interaction.user.id, 'pl');
-        return interaction.editReply({ embeds: panel.embeds });
-      }
+      if(interaction.customId==='rules_pl'){userLanguages.set(interaction.user.id,'pl');return interaction.editReply({embeds:verificationPanel(null,'pl').embeds});}
       if(interaction.customId.startsWith('language:')){
         if(interaction.guildId||interaction.message.author.id!==client.user.id)return interaction.editReply('Choose your language in the DM conversation with the bot.');
         const [,lang,messageId]=interaction.customId.split(':');
@@ -1687,28 +1426,9 @@ client.on(Events.InteractionCreate, async interaction => {
           await interaction.editReply(say(interaction.user.id,`Selected: ${reasonEnglish[reason.key]}. Continue this conversation here. Type menu to start another request.`,`Wybrana sprawa: ${reason.label}. Dalszą rozmowę prowadzimy tutaj. Aby zmienić sprawę, napisz menu.`));
         });
       }
-      if (interaction.customId === VERIFY_BUTTON_ID || (catalogLanguageEnabled && interaction.customId === 'fivemshop_verify_pl')) {
+      if (interaction.customId === VERIFY_BUTTON_ID) {
         if (interaction.guildId !== GUILD_ID || interaction.channelId !== VERIFY_CHANNEL_ID
           || interaction.message.author.id !== client.user.id) return await interaction.editReply(say(interaction.user.id,'This button only works in the FivemShop verification channel.','Ten przycisk działa tylko na kanale weryfikacji FivemShop.'));
-        if (catalogLanguageEnabled) {
-          const lang = interaction.customId === 'fivemshop_verify_pl' ? 'pl' : 'en';
-          try {
-            const newlyVerified = await verifyCatalogLanguage(interaction.guild, interaction.user.id, lang);
-            if (newlyVerified) await serial('verification', () => publishVerification(interaction.guild))
-              .catch(error => console.error('Weryfikacja FivemShop — aktualizacja licznika:', error.message));
-            const entries = catalogSources().map(item => catalogTargets.get(item.id)?.[lang]).filter(Boolean);
-            const start = entries.slice(-2).map(channel => `<#${channel.id}>`).join(' · ');
-            const message = lang === 'pl'
-              ? '✅ Regulamin zaakceptowany. Twój katalog i ogłoszenia są po polsku.'
-              : '✅ Rules accepted. Your catalog and announcements are set to English.';
-            return await interaction.editReply(start ? `${message}\n${start}` : message);
-          } catch (error) {
-            console.error('Weryfikacja FivemShop — język katalogu:', error.message);
-            return await interaction.editReply(lang === 'pl'
-              ? 'Nie udało się ustawić języka katalogu. Spróbuj ponownie lub powiadom obsługę.'
-              : 'We could not set your catalog language. Try again or contact staff.');
-          }
-        }
         const member = await interaction.guild.members.fetch(interaction.user.id);
         if (member.roles.cache.has(VERIFY_ROLE_ID)) return await interaction.editReply(say(interaction.user.id,'✅ You are already verified and have access to FivemShop.','✅ Masz już rangę weryfikacji i dostęp do FivemShop.'));
         try {
@@ -1753,10 +1473,9 @@ client.on(Events.InteractionCreate, async interaction => {
           if (offerEmbeds(source)[0].fields.some(f => f.name === 'Status' && ['Sprzedane','Wycofane'].includes(f.value))) return await interaction.editReply(say(interaction.user.id,'This car is no longer available. Please check the current car catalog.','Ta oferta samochodu nie jest już dostępna. Sprawdź aktualny katalog aut.'));
         }
         const title = offerEmbeds(source)[0].title;
-        const publicLink = catalogCopyMarker(interaction.message)?.startsWith(CATALOG_COPY) ? interaction.message.url : source.url;
         const price = offerEmbeds(source)[0].fields.find(f => f.name === '💰 Cena')?.value ?? 'Do ustalenia';
         try {
-          await interaction.user.send({ content: say(interaction.user.id,`**FivemShop — ${title}**\nPrice: ${price}\n${publicLink}\n\nYour request will reach our team. Reply here with your question or order details.`,`**${BRAND} — ${title}**\nCena: ${price}\n${publicLink}\n\nTwoje zapytanie trafi do obsługi. Napisz tutaj, co chcesz zamówić lub o co zapytać.`), allowedMentions: { parse: [] } });
+          await interaction.user.send({ content: say(interaction.user.id,`**FivemShop — ${title}**\nPrice: ${price}\n${source.url}\n\nYour request will reach our team. Reply here with your question or order details.`,`**${BRAND} — ${title}**\nCena: ${price}\n${source.url}\n\nTwoje zapytanie trafi do obsługi. Napisz tutaj, co chcesz zamówić lub o co zapytać.`), allowedMentions: { parse: [] } });
         } catch { return await interaction.editReply(say(interaction.user.id,'Enable DMs from server members and try again.','Włącz DM od członków serwera i kliknij ponownie.')); }
         await serial('tickets', async () => {
           const channel = await ticket(interaction.user, source.id, undefined, offerEmbeds(source)[0]?.footer?.text.includes('Auta FiveM'));
@@ -1794,9 +1513,7 @@ client.on(Events.InteractionCreate, async interaction => {
       return await interaction.editReply(`Panel weryfikacji gotowy: ${panel.url}`);
     }
     if (['oferta', 'oferty'].includes(interaction.commandName)) {
-      const defaultCatalog = interaction.commandName === 'oferty' ? CAR_CHANNELS[interaction.options.getString('kategoria')] : '1565082996489457805';
-      const destination = interaction.options.getChannel('kanal') ?? (catalogLanguageEnabled && defaultCatalog
-        ? await interaction.guild.channels.fetch(defaultCatalog) : interaction.channel);
+      const destination = interaction.options.getChannel('kanal') ?? interaction.channel;
       if (destination.type !== ChannelType.GuildText) return await interaction.editReply('Wybierz zwykły kanał tekstowy w polu kanal.');
       if (!destination.permissionsFor(interaction.member)?.has([P.ViewChannel, P.SendMessages])) return await interaction.editReply('Nie masz uprawnień do publikacji na tym kanale.');
       const name = interaction.options.getString('nazwa').trim();
@@ -1851,8 +1568,7 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.commandName === 'panel') {
       const prices = Object.fromEntries(priceFields.map(([key]) => [key, interaction.options.getString(key)?.trim()]));
       const descriptions = Object.fromEntries(priceFields.map(([key]) => [key, interaction.options.getString(`opis_${key}`)?.trim()]));
-      const destination = interaction.options.getChannel('kanal') ?? (catalogLanguageEnabled
-        ? await interaction.guild.channels.fetch('1565082996489457805') : interaction.channel);
+      const destination = interaction.options.getChannel('kanal') ?? interaction.channel;
       if (!destination.permissionsFor(interaction.member).has(P.ViewChannel)) return await interaction.editReply('Nie masz dostępu do wybranego kanału.');
       await destination.send({ embeds: [offer(prices, descriptions)], components: [buttons(), postLanguageRow('services')] });
       return await interaction.editReply('Oferta została opublikowana.');
