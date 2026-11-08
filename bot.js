@@ -1207,66 +1207,6 @@ client.once(Events.ClientReady, async () => {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
     await guild.members.fetch(OWNER_ID);
-
-    try {
-      const since = Date.parse('2026-11-08T09:21:00Z');
-      const sourceIds = new Set([...Object.values(CAR_CHANNELS), '1565082996489457805', '1562442683731935233']);
-      const names = new Set(['FiveShop · PL', 'FiveShop · EN']);
-      const roleNames = new Set(['FiveShop • PL (katalog)', 'FiveShop • EN (katalog)']);
-      const channels = await guild.channels.fetch();
-      const parents = [...channels.values()].filter(channel => channel?.type === ChannelType.GuildCategory && names.has(channel.name));
-      const parentIds = new Set(parents.map(channel => channel.id));
-      const ownedIds = async type => {
-        const result = new Set();
-        let before;
-        try {
-          while (true) {
-            const log = await guild.fetchAuditLogs({ type, limit: 100, ...(before ? { before } : {}) });
-            for (const entry of log.entries.values()) {
-              if (entry.executorId === client.user.id && entry.createdTimestamp >= since) result.add(entry.targetId);
-            }
-            const last = log.entries.last();
-            if (log.entries.size < 100 || last.createdTimestamp < since) break;
-            before = last.id;
-          }
-        } catch (error) { console.error('FiveShop cleanup — audit:', error.message); }
-        return result;
-      };
-      const [ownedChannels, ownedRoles] = await Promise.all([ownedIds(10), ownedIds(30)]);
-      let removed = 0;
-      const left = [];
-      for (const channel of channels.values()) {
-        if (!channel || channel.type !== ChannelType.GuildText || !parentIds.has(channel.parentId)) continue;
-        const tag = /^fiveshop:catalog:(pl|en):(\d+)$/.exec(channel.topic ?? '');
-        if (!tag || !sourceIds.has(tag[2]) || channel.createdTimestamp < since || sourceIds.has(channel.id)) continue;
-        await channel.delete('FiveShop — anulowanie osobnych katalogów językowych');
-        removed++;
-      }
-      const remaining = await guild.channels.fetch();
-      for (const parent of parents) {
-        if (ownedChannels.has(parent.id) && ![...remaining.values()].some(channel => channel?.parentId === parent.id)) {
-          await parent.delete('FiveShop — usunięcie pustej kategorii z anulowanej konfiguracji');
-          removed++;
-        } else {
-          left.push(parent.id);
-        }
-      }
-      const roles = await guild.roles.fetch();
-      const counts = await client.rest.get(`/guilds/${guild.id}/roles/member-counts`).catch(() => null);
-      let removedRoles = 0;
-      for (const role of roles.values()) {
-        if (!roleNames.has(role.name) || !ownedRoles.has(role.id) || !role.editable || role.permissions.bitfield !== 0n) continue;
-        if (counts && (counts[role.id] ?? 0) === 0) {
-          await role.delete('FiveShop — anulowanie nieużywanej roli językowej');
-          removedRoles++;
-        }
-      }
-      const rolesLeft = (await guild.roles.fetch()).filter(role => roleNames.has(role.name)).size;
-      console.log('FiveShop cleanup complete:', JSON.stringify({ removed, removedRoles, rolesLeft, left }));
-    } catch (error) {
-      console.error('FiveShop cleanup failed:', error.message);
-    }
-
     const channels = await guild.channels.fetch();
     for (const channel of channels.values()) {
       if (channel && ((channel.type === ChannelType.GuildCategory && [CATEGORY, OFFER_CATEGORY, CAR_CATEGORY].includes(channel.name))
