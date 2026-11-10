@@ -3,7 +3,7 @@ const fs=require('node:fs/promises'),path=require('node:path');
 protocol.registerSchemesAsPrivileged([{scheme:'fivemshop',privileges:{standard:true,secure:true,supportFetchAPI:true}}]);
 let window,token='',server='';
 let updates=null;
-const methods=new Set(['bootstrap','offers/list','offers/save','offers/status','tickets/list','tickets/messages','tickets/reply','tickets/close']);
+const methods=new Set(['bootstrap','offers/list','offers/save','offers/status','offers/delete','tickets/list','tickets/messages','tickets/reply','tickets/close']);
 const configPath=()=>path.join(app.getPath('userData'),'connection.json');
 const tokenPath=()=>path.join(app.getPath('userData'),'session.bin');
 function validServer(value){const u=new URL(value);if(u.protocol!=='https:'||u.username||u.password||u.port||!(u.hostname.endsWith('.up.railway.app')||u.hostname==='api-fivemshop.pykucreative.pl'))throw new Error('Wpisz poprawny adres HTTPS serwera FivemShop.');return u.origin;}

@@ -163,6 +163,25 @@ function desktopActions(guild) {
       if(!canManageCars(userId))throw new Error('Brak dostępu do aut.');if(!['Dostępne','Sprzedane','Wycofane'].includes(data.status))throw new Error('Nieprawidłowy status.');
       const interaction=await actor(userId);return serial(`car-offer:${id(data.channel)}:${id(data.id)}`,async()=>{const {message}=await carOfferSource(interaction,data.channel,data.id);if((message.editedTimestamp??null)!==(data.version??null))throw new Error('Oferta została zmieniona. Odśwież katalog.');const draft=carDraftFromMessage(message);draft.status=data.status;const sent=await message.edit({...carListingPayload(draft),content:null,embeds:[],attachments:[]});webCatalog.expires=0;return {offer:record(sent)};});
     }},
+    'offers/delete': { mutation: true, run: async (userId, data) => {
+      if (!canManageCars(userId)) throw new Error('Brak dostępu do aut.');
+      const channelId = id(data.channel);
+      const messageId = id(data.id);
+      const interaction = await actor(userId);
+      return serial(`car-offer:${channelId}:${messageId}`, async () => {
+        try {
+          const { message } = await carOfferSource(interaction, channelId, messageId, { force: true });
+          if ((message.editedTimestamp ?? null) !== (data.version ?? null)) {
+            throw new Error('Oferta została zmieniona. Odśwież katalog przed usunięciem.');
+          }
+          await message.delete();
+        } catch (error) {
+          if (error.code !== 10008) throw error; // Discord: the message was already deleted.
+        }
+        webCatalog.expires = 0;
+        return { deleted: true };
+      });
+    }},
     'tickets/list':{run:async(userId,data)=>{
       const channels=await guild.channels.fetch();const rows=[];
       for(const channel of channels.values()){
@@ -646,10 +665,10 @@ const carChannelMenu = (customId,guild) => new ActionRowBuilder().addComponents(
 function managedCar(message) {
   return message?.author?.id === client.user.id && offerEmbeds(message)[0]?.footer?.text === `${BRAND} • Auta FiveM`;
 }
-async function carOfferSource(interaction, channelId, messageId) {
+async function carOfferSource(interaction, channelId, messageId, { force = false } = {}) {
   if (!Object.values(CAR_CHANNELS).includes(channelId)) throw new Error('To nie jest kanał katalogu samochodów.');
   const channel = await offerDestination(interaction, channelId);
-  const message = await channel.messages.fetch(messageId);
+  const message = await channel.messages.fetch(force ? { message: messageId, force } : messageId);
   if (!managedCar(message)) throw new Error('Możesz zarządzać tylko ofertami samochodów tego bota.');
   return { channel, message };
 }

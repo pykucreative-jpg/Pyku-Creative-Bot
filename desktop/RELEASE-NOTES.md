@@ -1,5 +1,4 @@
-FivemShop 1.3.0
+FivemShop 1.3.1
 
-- Automatyczne sprawdzanie aktualizacji przy uruchomieniu i podczas pracy.
-- Pobieranie aktualizacji w programie oraz instalacja po potwierdzeniu restartu.
-- Zachowanie zmian kategorii ofert, kolejności katalogów i ulepszonych ticketów z wersji 1.2.
+- W katalogu samochodów można trwale usunąć ofertę, również wycofaną lub oznaczoną jako sprzedana.
+- Aplikacja przed usunięciem prosi o potwierdzenie i pokazuje nazwę samochodu.

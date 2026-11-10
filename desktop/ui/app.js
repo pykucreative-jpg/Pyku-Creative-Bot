@@ -24,10 +24,43 @@ $('#logout').onclick=async()=>{if(sending||publishing)return toast('Poczekaj na 
 document.addEventListener('click',e=>{const target=e.target.closest('[data-view]');if(target){if(target.dataset.view==='compose'&&!target.closest('.sidebar'))resetComposer();setView(target.dataset.view);}if(e.target.closest('.dialog-close')){const dialog=e.target.closest('dialog');if(dialog&&!(dialog.id==='preview-dialog'&&publishing))dialog.close();}});
 function showCatalogError(e){$('#offers-grid').replaceChildren(empty('Nie udało się wczytać ofert',e.message));}
 function image(url,alt){const img=el('img');img.alt=alt;img.loading='lazy';if(safeImage(url))img.src=url;return img;}
-function offerCard(row){const box=el('article',undefined,'offer-card');if(row.photos?.[0])box.append(image(row.photos[0],row.name));if(box.firstChild)box.firstChild.className='offer-cover';const detail=el('div',undefined,'offer-details');detail.append(el('p',row.categoryLabel,'offer-category'),el('h2',row.name),el('p',row.status,'offer-status'),el('strong',row.price));const buttons=el('div',undefined,'offer-buttons');const edit=el('button','Edytuj','outline');edit.disabled=row.status!=='Dostępne';edit.onclick=()=>editOffer(row);buttons.append(edit);const states=row.status==='Dostępne'?['Sprzedane','Wycofane']:['Dostępne'];for(const state of states){const b=el('button',state==='Dostępne'?'Przywróć':state==='Sprzedane'?'Sprzedane':'Wycofaj','outline');b.onclick=()=>changeStatus(row,state);buttons.append(b);}detail.append(buttons);box.append(detail);return box;}
-async function loadOffers(append=false){if(!append){offerCursor=null;offerRows=[];$('#offers-grid').replaceChildren(empty('Wczytuję katalog…','Pobieram aktualne oferty z Discorda.'));}const category=$('#offer-category').value;const result=await api('offers/list',{category,...(append&&offerCursor?{before:offerCursor}:{})});if(category!==$('#offer-category').value)return;offerRows=append?[...offerRows,...result.offers]:result.offers;offerCursor=result.before;renderOfferResults();$('#older-offers').hidden=!offerCursor;}
+let offerRequest = 0;
+function offerCard(row){const box=el('article',undefined,'offer-card');if(row.photos?.[0])box.append(image(row.photos[0],row.name));if(box.firstChild)box.firstChild.className='offer-cover';const detail=el('div',undefined,'offer-details');detail.append(el('p',row.categoryLabel,'offer-category'),el('h2',row.name),el('p',row.status,'offer-status'),el('strong',row.price));const buttons=el('div',undefined,'offer-buttons');const edit=el('button','Edytuj','outline');edit.disabled=row.status!=='Dostępne';edit.onclick=()=>editOffer(row);buttons.append(edit);const states=row.status==='Dostępne'?['Sprzedane','Wycofane']:['Dostępne'];for(const state of states){const b=el('button',state==='Dostępne'?'Przywróć':state==='Sprzedane'?'Sprzedane':'Wycofaj','outline');b.onclick=()=>changeStatus(row,state);buttons.append(b);}const remove=el('button','Usuń ofertę','outline danger');remove.onclick=()=>deleteOffer(row);buttons.append(remove);detail.append(buttons);box.append(detail);return box;}
+async function loadOffers(append=false){const request=++offerRequest;if(!append){offerCursor=null;offerRows=[];$('#offers-grid').replaceChildren(empty('Wczytuję katalog…','Pobieram aktualne oferty z Discorda.'));}const category=$('#offer-category').value;const result=await api('offers/list',{category,...(append&&offerCursor?{before:offerCursor}:{})});if(request!==offerRequest||category!==$('#offer-category').value)return;offerRows=append?[...offerRows,...result.offers]:result.offers;offerCursor=result.before;renderOfferResults();$('#older-offers').hidden=!offerCursor;}
 $('#offer-category').onchange=()=>loadOffers().catch(showCatalogError);$('#refresh-offers').onclick=e=>busy(e.currentTarget,()=>loadOffers().catch(showCatalogError));$('#older-offers').onclick=e=>busy(e.currentTarget,()=>loadOffers(true).catch(showCatalogError));
-async function confirmAction(title,text,callback){$('#confirm-title').textContent=title;$('#confirm-text').textContent=text;$('#confirm-dialog').showModal();$('#confirm-cancel').onclick=()=>$('#confirm-dialog').close();$('#confirm-yes').onclick=e=>busy(e.currentTarget,async()=>{try{await callback();$('#confirm-dialog').close();}catch(err){$('#confirm-text').textContent=err.message;}});}
+function confirmAction(title, text, callback, { destructive = false } = {}) {
+  const dialog = $('#confirm-dialog');
+  const cancel = $('#confirm-cancel');
+  const yes = $('#confirm-yes');
+  $('#confirm-title').textContent = title;
+  $('#confirm-text').textContent = text;
+  yes.textContent = destructive ? 'Usuń na stałe' : 'Potwierdź';
+  yes.classList.toggle('danger', destructive);
+  cancel.onclick = () => dialog.close();
+  dialog.oncancel = event => { if (yes.disabled) event.preventDefault(); };
+  yes.onclick = event => busy(event.currentTarget, async () => {
+    cancel.disabled = true;
+    try {
+      await callback();
+      dialog.close();
+    } catch (err) {
+      error('#confirm-text', err);
+    } finally {
+      cancel.disabled = false;
+    }
+  });
+  dialog.showModal();
+  if (destructive) cancel.focus();
+}
+function deleteOffer(row) {
+  confirmAction('Usunąć ofertę?', `Ogłoszenie „${row.name}” zniknie z katalogu i z kanału na Discordzie. Tej operacji nie można cofnąć.`, async () => {
+    await api('offers/delete', { id: row.id, channel: row.channel, version: row.version, operationId: crypto.randomUUID() });
+    offerRequest++;
+    offerRows = offerRows.filter(offer => offer.id !== row.id);
+    renderOfferResults();
+    toast('Oferta została usunięta.');
+  }, { destructive: true });
+}
 function changeStatus(row,status){confirmAction(status==='Dostępne'?'Przywrócić dostępność?':status==='Sprzedane'?'Oznaczyć auto jako sprzedane?':'Wycofać ofertę?',status==='Dostępne'?'Przycisk zamówienia pojawi się ponownie.':'Oferta zostanie na kanale ze statusem, ale przycisk zamówienia zniknie. Zmianę możesz później cofnąć.',async()=>{await api('offers/status',{id:row.id,channel:row.channel,version:row.version,status,operationId:crypto.randomUUID()});await loadOffers();toast('Status oferty został zmieniony.');});}
 function clearFiles(){for(const p of files)URL.revokeObjectURL(p.url);files=[];$('#offer-photos').value='';}
 function resetComposer(){clearFiles();existingPhotos=[];editing=null;offerOperation=null;$('#offer-form').reset();$('#compose-category').disabled=false;$('#compose-title').textContent='Nowy samochód';$('#preview-button').textContent='Sprawdź podgląd →';error('#offer-error','');renderPhotos();updateChannel();}
