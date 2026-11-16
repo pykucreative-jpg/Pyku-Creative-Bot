@@ -271,22 +271,106 @@ const DM_REASONS = [
   { id: '4', key: 'citizeny', label: 'Citizeny', emoji: '🎮' },
   { id: '5', key: 'optymalizacja', label: 'Optymalizacja PC', emoji: '🚀' },
   { id: '6', key: 'ubrania', label: 'Ubrania', emoji: '👕' },
+  { id: '7', key: 'blad-pojazdu', label: 'Błąd pojazdu', emoji: '🔧' },
+  { id: '8', key: 'pytania-auta', label: 'Pytania o samochody', emoji: '💬' },
+  { id: '9', key: 'zamowienie-uslugi', label: 'Zamówienie indywidualne', emoji: '🛒' },
+  { id: '10', key: 'pytania-uslugi', label: 'Pytania o usługi', emoji: '💬' },
 ];
 const activeTopic = (id, offerId, reason, carOffer = false) => offerId ? `pyku:offer:${id}:${offerId}${carOffer ? ':car' : ''}` : `pyku:open:${id}${reason ? `:${reason.id}` : ''}`;
 const activeTicket = topic => /^pyku:(open|offer):(\d+)(?::(\d+))?(?::(car))?$/.exec(topic ?? '');
-const isCarTicket = topic => /^pyku:(open|closed):\d+:1$/.test(topic ?? '') || /^pyku:(offer|closedoffer):\d+:\d+:car$/.test(topic ?? '');
+const isCarTicket = topic => /^pyku:(open|closed):\d+:(1|7|8)$/.test(topic ?? '') || /^pyku:(offer|closedoffer):\d+:\d+:car$/.test(topic ?? '');
 const ticketLabel = match => match[1] === 'offer' ? `Oferta ${match[3].slice(-6)}` : DM_REASONS.find(reason => reason.id === match[3])?.label ?? 'Usługi';
 function reasonMenu(messageId = 'new',lang='en') {
   return {
     embeds: [new EmbedBuilder().setColor(0xf0ae42).setTitle(lang==='pl'?'📩 FivemShop • W czym możemy pomóc?':'📩 FivemShop • How can we help?')
       .setDescription(lang==='pl'?'Wybierz, w jakiej sprawie piszesz. Twoja wiadomość i załączniki trafią do odpowiedniego zgłoszenia.\n\nAby później wybrać inną sprawę, napisz **menu**.':'Choose a category. Your message and attachments will reach the right team.\n\nType **menu** to start another request or change language.')],
-    components: [0, 3].map(start => new ActionRowBuilder().addComponents(DM_REASONS.slice(start, start + 3).map(reason =>
+    components: [0, 3, 6, 9].map(start => new ActionRowBuilder().addComponents(DM_REASONS.slice(start, start + 3).map(reason =>
       new ButtonBuilder().setCustomId(`reason:${reason.id}:${messageId}`).setLabel(lang==='pl'?reason.label:reasonEnglish[reason.key]).setEmoji(reason.emoji).setStyle(ButtonStyle.Secondary)))),
   };
 }
 const userLanguages=new Map(),ticketLanguages=new Map();
-const reasonEnglish={samochody:'Cars',skiny:'Weapon skins',mody:'Mods',citizeny:'Citizen packs',optymalizacja:'PC optimisation',ubrania:'FiveM clothing'};
+const reasonEnglish={samochody:'Cars',skiny:'Weapon skins',mody:'Mods',citizeny:'Citizen packs',optymalizacja:'PC optimisation',ubrania:'FiveM clothing',
+  'blad-pojazdu':'Vehicle issue','pytania-auta':'Car questions','zamowienie-uslugi':'Custom order','pytania-uslugi':'Service questions'};
 const languageOf=id=>userLanguages.get(id)??'en';
+const isCarReason = reason => ['1', '7', '8'].includes(reason?.id);
+const PUBLIC_TICKET_CHANNEL = '1562451486150099085';
+const PUBLIC_TICKET_MARKER = 'FiveShop • Centrum zgłoszeń v1';
+function publicTicketPanel() {
+  return {
+    embeds: [new EmbedBuilder().setColor(0xc7a36b).setTitle('📩 FiveShop • Otwórz ticket')
+      .setDescription('Wybierz dział, a następnie kategorię sprawy. Twoje zgłoszenie trafi do odpowiedniej osoby.\n\nChoose a department and a category to contact the right person.\n\n🚗 **Samochody / Cars — Ponczula420**\nZamówienia aut, błędy pojazdów i pytania o samochody.\n\n🎨 **Projekty i usługi / Custom services — OFFWHITE**\nSkiny, mody, citizeny, ubrania, optymalizacja PC i zamówienia indywidualne.\n\n🔒 Rozmowę prowadzimy na DM przez bota. Włącz prywatne wiadomości od członków serwera.\nWe reply through the bot in DMs. Enable DMs from server members.')
+      .setFooter({ text: PUBLIC_TICKET_MARKER })],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('helpdesk:cars:pl').setLabel('Samochody • Ponczula420').setEmoji('🚗').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('helpdesk:services:pl').setLabel('Usługi • OFFWHITE').setEmoji('🎨').setStyle(ButtonStyle.Primary)),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('helpdesk:cars:en').setLabel('Cars • English').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('helpdesk:services:en').setLabel('Services • English').setStyle(ButtonStyle.Secondary))],
+    allowedMentions: { parse: [] },
+  };
+}
+async function publishPublicTicketPanel(guild) {
+  const channel = await guild.channels.fetch(PUBLIC_TICKET_CHANNEL);
+  if (channel?.type !== ChannelType.GuildText) throw new Error('Nie znaleziono kanału centrum zgłoszeń.');
+  let before;
+  while (true) {
+    const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+    const existing = page.find(message => message.author.id === client.user.id
+      && message.embeds.some(embed => embed.footer?.text === PUBLIC_TICKET_MARKER));
+    if (existing) {
+      const updated = await existing.edit(publicTicketPanel());
+      console.log('Centrum zgłoszeń gotowe:', updated.url);
+      return updated;
+    }
+    if (page.size < 100) break;
+    before = page.last().id;
+  }
+  const sent = await channel.send(publicTicketPanel());
+  console.log('Centrum zgłoszeń gotowe:', sent.url);
+  return sent;
+}
+async function handlePublicTicketPanel(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (interaction.guildId !== GUILD_ID || interaction.channelId !== PUBLIC_TICKET_CHANNEL
+      || interaction.message.author.id !== client.user.id) {
+    return interaction.editReply('Użyj panelu na kanale otwierania ticketów.');
+  }
+  const [action, department, lang] = interaction.customId.split(':');
+  if (!['cars', 'services'].includes(department) || !['en', 'pl'].includes(lang)) {
+    return interaction.editReply('Nieprawidłowy wybór.');
+  }
+  const pl = lang === 'pl';
+  const reasons = DM_REASONS.filter(reason => isCarReason(reason) === (department === 'cars'));
+  if (action === 'helpdesk') {
+    if (!interaction.message.embeds.some(embed => embed.footer?.text === PUBLIC_TICKET_MARKER)) {
+      return interaction.editReply('Otwórz aktualny panel ticketów.');
+    }
+    return interaction.editReply({
+      content: pl ? '**Wybierz kategorię zgłoszenia**' : '**Choose your support category**',
+      components: [new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+        .setCustomId(`helpdeskcategory:${department}:${lang}`)
+        .setPlaceholder(pl ? 'W jakiej sprawie piszesz?' : 'How can we help?')
+        .addOptions(reasons.map(reason => ({ label: pl ? reason.label : reasonEnglish[reason.key], value: reason.id, emoji: reason.emoji }))))],
+    });
+  }
+  const reason = reasons.find(item => item.id === interaction.values?.[0]);
+  if (action !== 'helpdeskcategory' || !reason) return interaction.editReply('Nieprawidłowa kategoria.');
+  return serial('tickets', async () => {
+    const { channels } = await guildAndChannels();
+    const existing = channels.find(channel => channel?.type === ChannelType.GuildText
+      && channel.topic === activeTopic(interaction.user.id, undefined, reason));
+    const notice = pl
+      ? `**FiveShop • ${reason.label}**\n${existing ? 'To zgłoszenie jest już otwarte.' : 'Otwieramy zgłoszenie.'} Napisz tutaj, w czym możemy pomóc. Możesz dodać zdjęcia i pliki.\nObsługa: ${department === 'cars' ? 'Ponczula420' : 'OFFWHITE'}.`
+      : `**FiveShop • ${reasonEnglish[reason.key]}**\n${existing ? 'This ticket is already open.' : 'We are opening your ticket.'} Reply here with your request. You can attach images and files.\nSupport: ${department === 'cars' ? 'Ponczula420' : 'OFFWHITE'}.`;
+    try { await interaction.user.send({ content: notice, allowedMentions: { parse: [] } }); }
+    catch { return interaction.editReply(pl ? 'Włącz DM od członków serwera i wybierz kategorię ponownie.' : 'Enable DMs from server members and select the category again.'); }
+    userLanguages.set(interaction.user.id, lang);
+    await ticket(interaction.user, undefined, reason);
+    return interaction.editReply(pl
+      ? `✅ ${existing ? 'Masz już otwarte zgłoszenie' : 'Zgłoszenie otwarte'}: **${reason.label}**. Napisz teraz do bota na DM.\nJeśli masz kilka zgłoszeń, bot zapyta, do którego przekazać wiadomość.`
+      : `✅ ${existing ? 'Your existing ticket is ready' : 'Ticket opened'}: **${reasonEnglish[reason.key]}**. Continue in your DMs with the bot.\nIf several tickets are open, the bot will ask where to send your message.`);
+  });
+}
 const say=(id,en,pl)=>languageOf(id)==='pl'?pl:en;
 const publicTicketLabel=(match,lang)=>lang==='pl'?ticketLabel(match):match[1]==='offer'?`Offer ${match[3].slice(-6)}`:reasonEnglish[DM_REASONS.find(r=>r.id===match[3])?.key]??'Services';
 function languageMenu(messageId='new'){
@@ -1198,7 +1282,7 @@ async function ticket(user, offerId, reason, carOffer = false) {
   const { guild, channels } = await guildAndChannels();
   const existing = channels.find(c => c?.type === ChannelType.GuildText && c.topic === activeTopic(user.id, offerId, reason, carOffer));
   if (existing) return existing;
-  const cars = carOffer || reason?.key === 'samochody';
+  const cars = carOffer || isCarReason(reason);
   const overwrites = privateOverwrites(guild, cars);
   const categoryName = cars ? CAR_CATEGORY : offerId ? OFFER_CATEGORY : CATEGORY;
   let category = channels.find(c => c?.type === ChannelType.GuildCategory && c.name === categoryName);
@@ -1261,6 +1345,7 @@ client.once(Events.ClientReady, async () => {
     startWebsiteCatalog(guild);
     refreshCarListingLayout(guild).catch(error=>console.error('English car layout:',error.message));
     try { await publishOfferPanel(guild); } catch (error) { console.error("Stały panel ofert:", error.message); }
+    try { await publishPublicTicketPanel(guild); } catch (error) { console.error('Centrum zgłoszeń:', error.message); }
     console.log(`${BRAND}: bot działa jako ${client.user.tag}`);
     try { await serial('bump', () => checkBumpReminder(guild)); }
     catch (error) { console.error('Bump FivemShop:', error.message); }
@@ -1338,6 +1423,16 @@ client.on(Events.MessageUpdate, (_old, message) => {
 });
 
 client.on(Events.InteractionCreate, async interaction => {
+  if ((interaction.isButton() || interaction.isStringSelectMenu()) && /^helpdesk(?:category)?:/.test(interaction.customId ?? '')) {
+    try { await handlePublicTicketPanel(interaction); }
+    catch (error) {
+      console.error('Centrum zgłoszeń:', error.message);
+      const payload = { content: 'Nie udało się otworzyć zgłoszenia. Spróbuj ponownie lub skontaktuj się z obsługą.', flags: MessageFlags.Ephemeral };
+      if (interaction.deferred || interaction.replied) await interaction.editReply({ content: payload.content }).catch(() => {});
+      else await interaction.reply(payload).catch(() => {});
+    }
+    return;
+  }
   if (interaction.customId?.startsWith('offerpanel:')) {
     try { await handleOfferPanel(interaction); }
     catch (error) {
