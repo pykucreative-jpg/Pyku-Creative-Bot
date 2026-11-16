@@ -398,7 +398,19 @@ async function refreshEnglishServicePanels(guild){
  for(const channel of (await guild.channels.fetch()).values()){
   if(channel?.type!==ChannelType.GuildText||/^pyku:/.test(channel.topic??'')||!channel.permissionsFor(guild.members.me)?.has([P.ViewChannel,P.ReadMessageHistory]))continue;
   try{for(const message of (await channel.messages.fetch({limit:100})).values()){
-    const card=message.embeds[0];if(message.author.id!==client.user.id||!['OFERTA • USŁUGI NA ZAMÓWIENIE','CUSTOM SERVICES • FIVEMSHOP'].includes(card?.title)||card.footer?.text.startsWith(TRANSLATION_MARKER)||languageReference(message))continue;
+    const card=message.embeds[0];if(message.author.id!==client.user.id||!['OFERTA • USŁUGI NA ZAMÓWIENIE','CUSTOM SERVICES • FIVEMSHOP'].includes(card?.title)||card.footer?.text.startsWith(TRANSLATION_MARKER))continue;
+    if (languageReference(message) === 'services') {
+      const components = message.components.map(row => row.toJSON());
+      let changed = false;
+      for (const row of components) for (const button of row.components ?? []) {
+        if (!button.custom_id?.startsWith('postlang:')) continue;
+        const label = languageLabel[button.custom_id.split(':')[1]];
+        if (label && button.label !== label) { button.label = label; changed = true; }
+      }
+      if (changed) { await message.edit({ components }); updated++; }
+      continue;
+    }
+    if (languageReference(message)) continue;
     if (card.title === 'CUSTOM SERVICES • FIVEMSHOP') {
       await message.edit({ components: [...message.components, postLanguageRow('services')] });
       updated++;
@@ -449,7 +461,7 @@ const buttons = () => new ActionRowBuilder().addComponents(
 );
 const ANNOUNCEMENT_MARKER = 'FivemShop • Announcements';
 const TRANSLATION_MARKER = 'FivemShop • Tłumaczenie • ';
-const languageLabel = { en: '🇬🇧 English', pl: '🇵🇱 Polski' };
+const languageLabel = { en: '🌐 Switch to English', pl: '🌐 Zmień język na polski' };
 const componentRows = message => (message.components ?? []).flatMap(component => {
   const json = component.toJSON?.() ?? component;
   return json.type === 17 ? json.components.filter(child => child.type === 1) : [json];
