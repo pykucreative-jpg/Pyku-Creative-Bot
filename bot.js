@@ -161,7 +161,7 @@ function desktopActions(guild) {
     }},
     'offers/status':{mutation:true,run:async(userId,data)=>{
       if(!canManageCars(userId))throw new Error('Brak dostępu do aut.');if(!['Dostępne','Sprzedane','Wycofane'].includes(data.status))throw new Error('Nieprawidłowy status.');
-      const interaction=await actor(userId);return serial(`car-offer:${id(data.channel)}:${id(data.id)}`,async()=>{const {message}=await carOfferSource(interaction,data.channel,data.id);if((message.editedTimestamp??null)!==(data.version??null))throw new Error('Oferta została zmieniona. Odśwież katalog.');const draft=carDraftFromMessage(message);draft.status=data.status;const sent=await message.edit({...carListingPayload(draft),content:null,embeds:[],attachments:[]});webCatalog.expires=0;return {offer:record(sent)};});
+      const interaction=await actor(userId);return serial(`car-offer:${id(data.channel)}:${id(data.id)}`,async()=>{const {message}=await carOfferSource(interaction,data.channel,data.id);if((message.editedTimestamp??null)!==(data.version??null))throw new Error('Oferta została zmieniona. Odśwież katalog.');const draft=carDraftFromMessage(message);draft.status=data.status;const sent=await message.edit({...await prepareCarListingPayload(draft),content:null,embeds:[],attachments:[]});webCatalog.expires=0;return {offer:record(sent)};});
     }},
     'offers/delete': { mutation: true, run: async (userId, data) => {
       if (!canManageCars(userId)) throw new Error('Brak dostępu do aut.');
@@ -660,6 +660,76 @@ const OFFER_PANEL_CHANNEL = '1566745743224737812';
 const OFFER_PANEL_MARKER = 'FivemShop • Stały panel ofert v1';
 // One public car listing: text, native photo gallery and order button in one container.
 const CAR_LABEL_EN={'Sportowe':'Sports cars','Sedan':'Sedans','Offroad':'Off-road','Bogate tune':'Tuned cars','Motocykle':'Motorcycles','Pakiety aut':'Car packs','SUV':'SUV','Coupe':'Coupes','Muscle':'Muscle cars','Supersamochody':'Supercars'};
+const CAR_DESCRIPTION_STORE = 'fiveshop:car-description-store:v1';
+const CAR_DESCRIPTION_MARKER = 'FiveShop • Opis auta • ';
+const carDescriptions = new Map();
+const savedCarDescriptions = new Set();
+let carDescriptionStore;
+const carDescriptionKey = description => createHash('sha256').update(description).digest('hex');
+function carDescriptionReference(message) {
+  return componentRows(message).flatMap(row => row.components ?? [])
+    .find(button => button.custom_id?.startsWith('cardescription:'))?.custom_id.slice('cardescription:'.length);
+}
+async function loadCarDescriptions(guild) {
+  const channels = await guild.channels.fetch();
+  carDescriptionStore = channels.find(channel => channel?.type === ChannelType.GuildText && channel.topic === CAR_DESCRIPTION_STORE);
+  if (!carDescriptionStore) carDescriptionStore = await guild.channels.create({
+    name: 'fiveshop-dane-ofert', type: ChannelType.GuildText, topic: CAR_DESCRIPTION_STORE,
+    permissionOverwrites: [
+      { id: guild.id, type: 0, deny: [P.ViewChannel] },
+      { id: client.user.id, type: 1, allow: [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.EmbedLinks] },
+      { id: OWNER_ID, type: 1, allow: [P.ViewChannel, P.ReadMessageHistory] },
+      { id: CAR_OWNER_ID, type: 1, allow: [P.ViewChannel, P.ReadMessageHistory] },
+    ],
+  });
+  let before;
+  while (true) {
+    const page = await carDescriptionStore.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+    for (const message of page.values()) {
+      const card = message.embeds[0];
+      if (message.author.id !== client.user.id || !card?.footer?.text.startsWith(CAR_DESCRIPTION_MARKER) || !card.description) continue;
+      const key = card.footer.text.slice(CAR_DESCRIPTION_MARKER.length);
+      if (carDescriptionKey(card.description) !== key) continue;
+      carDescriptions.set(key, card.description);
+      savedCarDescriptions.add(key);
+    }
+    if (page.size < 100) break;
+    before = page.last().id;
+  }
+  console.log('Opisy aut: wczytano', savedCarDescriptions.size);
+}
+async function prepareCarListingPayload(draft, options) {
+  if (draft.description) {
+    const key = carDescriptionKey(draft.description);
+    await serial(`car-description:${key}`, async () => {
+      if (savedCarDescriptions.has(key)) return;
+      if (!carDescriptionStore) throw new Error('Magazyn opisów aut jest niedostępny.');
+      await carDescriptionStore.send({
+        embeds: [new EmbedBuilder().setTitle(draft.name).setDescription(draft.description)
+          .setFooter({ text: CAR_DESCRIPTION_MARKER + key })],
+        allowedMentions: { parse: [] },
+      });
+      carDescriptions.set(key, draft.description);
+      savedCarDescriptions.add(key);
+    });
+  }
+  return carListingPayload(draft, options);
+}
+async function showCarDescription(interaction) {
+  if (interaction.guildId !== GUILD_ID || interaction.message.author.id !== client.user.id
+      || !Object.values(CAR_CHANNELS).includes(interaction.channelId)) {
+    return interaction.editReply('Ten przycisk działa przy ofercie samochodu.');
+  }
+  const message = await interaction.channel.messages.fetch({ message: interaction.message.id, force: true }).catch(() => null);
+  if (!message || !managedCar(message)) return interaction.editReply('Ta oferta jest już niedostępna.');
+  const card = offerEmbeds(message)[0];
+  return interaction.editReply({
+    embeds: [new EmbedBuilder().setColor(0xc7a36b).setTitle(card.title)
+      .setDescription(card.description || 'Brak dodatkowego opisu.').setURL(message.url)
+      .addFields({ name: '💰 Cena / Price', value: card.fields.find(field => field.name === '💰 Cena')?.value ?? 'Do ustalenia' })],
+    allowedMentions: { parse: [] },
+  });
+}
 function offerEmbeds(message) {
   if (message.embeds?.length) return message.embeds;
   const root = message.components?.map(c => c.toJSON?.() ?? c).find(c => c.type === 17 && c.id === 2001);
@@ -667,7 +737,9 @@ function offerEmbeds(message) {
   const field = id => root.components.find(c => c.type === 10 && c.id === id)?.content;
   if (!['-# FivemShop • Auta FiveM','-# FivemShop • FiveM Cars'].includes(field(106))) return [];
   const name = field(101)?.replace(/^#{2,3} /, '');
-  const description = field(102) ?? '';
+  const reference = carDescriptionReference(message);
+  const description = field(102) ?? (reference ? carDescriptions.get(reference) : '') ?? '';
+  if (reference && !carDescriptions.has(reference)) throw new Error('Nie udało się odczytać opisu auta. Powiadom obsługę.');
   const price = field(103)?.replace(/^(?:\*\*Cena\*\*\n|### )/, '');
   const rawCategory = field(104)?.replace(/^(?:\*\*Kategoria\*\*\n|-# 🏁 FIVEMSHOP · )/, '');
   const category=Object.entries(CAR_LABEL_EN).find(([,en])=>en===rawCategory)?.[0]??rawCategory;
@@ -700,12 +772,17 @@ function carListingPayload(draft, { upload = true } = {}) {
       new TextDisplayBuilder().setId(103).setContent(`### ${draft.price}`));
   if (!active) box.addTextDisplayComponents(new TextDisplayBuilder().setId(105).setContent(`**Status**\n${({Sprzedane:'Sold',Wycofane:'Withdrawn',Dostępne:'Available'})[status]??status}`));
   box.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
-  if (draft.description) box.addTextDisplayComponents(new TextDisplayBuilder().setId(102).setContent(draft.description));
   const photos = draft.photos.slice(0,10);
   const files = upload ? photos.map((p,i) => ({ attachment: p.url, name: `auto-${i}.${p.name.split('.').pop().toLowerCase()}` })) : [];
   if (photos.length) box.addMediaGalleryComponents(new MediaGalleryBuilder().addItems(photos.map((p,i) => new MediaGalleryItemBuilder()
     .setURL(upload ? `attachment://${files[i].name}` : p.url).setDescription(`${draft.name} — zdjęcie ${i+1}`.slice(0,1024)))));
   box.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
+  if (draft.description) {
+    const key = carDescriptionKey(draft.description);
+    carDescriptions.set(key, draft.description);
+    box.addActionRowComponents(new ActionRowBuilder().addComponents(new ButtonBuilder()
+      .setCustomId(`cardescription:${key}`).setLabel('Pokaż opis / Show description').setEmoji('📋').setStyle(ButtonStyle.Secondary)));
+  }
   if (active) box.addActionRowComponents(contactButton('offer_contact', true));
   if (draft.translation) box.addActionRowComponents(postLanguageRow(draft.translation));
   box.addTextDisplayComponents(new TextDisplayBuilder().setId(106).setContent('-# FivemShop • FiveM Cars'));
@@ -717,15 +794,20 @@ async function refreshCarListingLayout(guild) {
     try {
       const channel = await guild.channels.fetch(id);
       if (channel?.type !== ChannelType.GuildText || !channel.permissionsFor(guild.members.me)?.has([P.ViewChannel,P.ReadMessageHistory,P.SendMessages,P.AttachFiles])) continue;
-      const history = await channel.messages.fetch({limit:100});
-      for (const message of history.values()) {
-        if (!managedCar(message)) continue;
-        const container = message.components?.map(c => c.toJSON?.() ?? c).find(c => c.type === 17 && c.id === 2001);
-        if (container?.components.some(c=>c.id===106&&c.content==='-# FivemShop • FiveM Cars')) continue;
-        const draft = carDraftFromMessage(message);
-        draft.photos=draft.photos.map(photo=>{const attached=message.attachments.find(a=>a.url===photo.url);return attached?{...photo,url:`attachment://${attached.name}`}:photo;});
-        await message.edit({ ...carListingPayload(draft,{upload:false}), content: null, embeds: [] });
-        updated++;
+      let before;
+      while (true) {
+        const history = await channel.messages.fetch({limit:100, ...(before ? { before } : {})});
+        for (const message of history.values()) {
+          if (!managedCar(message)) continue;
+          const container = message.components?.map(c => c.toJSON?.() ?? c).find(c => c.type === 17 && c.id === 2001);
+          if (carDescriptionReference(message) || (container && !container.components.some(component => component.id === 102))) continue;
+          const draft = carDraftFromMessage(message);
+          draft.photos=draft.photos.map(photo=>{const attached=message.attachments.find(a=>a.url===photo.url);return attached?{...photo,url:`attachment://${attached.name}`}:photo;});
+          await message.edit({ ...await prepareCarListingPayload(draft,{upload:false}), content: null, embeds: [] });
+          updated++;
+        }
+        if (history.size < 100) break;
+        before = history.last().id;
       }
     } catch (error) { console.error('Układ ogłoszeń aut:', id, error.message); }
   }
@@ -747,7 +829,7 @@ async function saveCarListing(destination,draft,source) {
       draft = { ...draft, translation: previous.translation };
     }
   }
-  const payload=carListingPayload(draft);
+  const payload=await prepareCarListingPayload(draft);
   if(!source)return destination.send(payload);
   if(source.channelId===destination.id)return source.edit({...payload,content:null,embeds:[],attachments:[]});
   const sent=await destination.send(payload);
@@ -825,7 +907,7 @@ async function handleCarManagement(interaction) {
       const { message } = await carOfferSource(interaction, channelId, messageId);
       const draft = carDraftFromMessage(message);
       draft.status = state === 'sold' ? 'Sprzedane' : state === 'withdrawn' ? 'Wycofane' : 'Dostępne';
-      const updated = await message.edit({ ...carListingPayload(draft), content: null, embeds: [], attachments: [] });
+      const updated = await message.edit({ ...await prepareCarListingPayload(draft), content: null, embeds: [], attachments: [] });
       webCatalog.expires = 0;
       return interaction.editReply(carManageView(updated, channelId));
     });
@@ -971,7 +1053,7 @@ async function handleOfferPanel(interaction) {
         if ((message.editedTimestamp ?? null) !== draft.source.edited) { draft.busy = false; throw new Error('Oferta została zmieniona przez inną osobę. Otwórz jej aktualną wersję w panelu.'); }
         return saveCarListing(destination,draft,message).catch(error=>{draft.busy=false;throw error;});
       });
-    } else sent = await destination.send(draft.cars ? carListingPayload(draft) : { ...imagePayload(draft.photos, draftCard(draft)), components: [contactButton('offer_contact', false)], allowedMentions: { parse: [] } });
+    } else sent = await destination.send(draft.cars ? await prepareCarListingPayload(draft) : { ...imagePayload(draft.photos, draftCard(draft)), components: [contactButton('offer_contact', false)], allowedMentions: { parse: [] } });
     offerDrafts.delete(id); webCatalog.expires = 0;
     return interaction.editReply({ content: `✅ ${draft.source ? 'Zmiany zapisane' : 'Oferta opublikowana'}: ${sent.url}\nID do komendy /zdjecia: ${sent.id}`, embeds: [],
       components: draft.cars ? [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('offerpanel:new:cars').setLabel(action === 'publishnext' ? 'Dodaj kolejne auto' : 'Dodaj samochód').setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId('offerpanel:manage').setLabel('Zarządzaj samochodami').setStyle(ButtonStyle.Secondary))] : [] });
@@ -1324,6 +1406,7 @@ client.once(Events.ClientReady, async () => {
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
     await guild.members.fetch(OWNER_ID);
+    await loadCarDescriptions(guild);
     const channels = await guild.channels.fetch();
     for (const channel of channels.values()) {
       if (channel && ((channel.type === ChannelType.GuildCategory && [CATEGORY, OFFER_CATEGORY, CAR_CATEGORY].includes(channel.name))
@@ -1461,6 +1544,7 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (interaction.isButton()) {
+      if (interaction.customId.startsWith('cardescription:')) return await showCarDescription(interaction);
       if (interaction.customId.startsWith('postlang:')) return await showPostLanguage(interaction);
       if (['ticket_close','ticket_close_confirm','ticket_close_cancel'].includes(interaction.customId)) return await handleTicketCloseButton(interaction);
       if (interaction.customId.startsWith('desktop_login:')) return await showDesktopLoginCode(interaction);
@@ -1601,7 +1685,7 @@ client.on(Events.InteractionCreate, async interaction => {
           ?? CAR_GROUPS.find(([, regex]) => regex.test(destination.name.toLowerCase()));
         if (category) card.addFields({ name: '📂 Kategoria', value: category[2] });
       }
-      const sent = await destination.send(cars ? carListingPayload({ cars:true, name, description, price, categoryLabel: card.data.fields.find(f => f.name === '📂 Kategoria')?.value ?? 'Samochody', photos }) : { ...imagePayload(photos, card), components: [contactButton('offer_contact', false)] });
+      const sent = await destination.send(cars ? await prepareCarListingPayload({ cars:true, name, description, price, categoryLabel: card.data.fields.find(f => f.name === '📂 Kategoria')?.value ?? 'Samochody', photos }) : { ...imagePayload(photos, card), components: [contactButton('offer_contact', false)] });
       webCatalog.expires = 0;
       return await interaction.editReply(`Oferta opublikowana: ${sent.url}\nID oferty do dodania kolejnych zdjęć: ${sent.id}`);
     }
@@ -1619,7 +1703,7 @@ client.on(Events.InteractionCreate, async interaction => {
           try { photos = photosFrom(interaction); } catch (error) { return await interaction.editReply(error.message); }
           if (draft.photos.length + photos.length > 10) return await interaction.editReply('Jedno ogłoszenie mieści maksymalnie 10 zdjęć. Zastąp galerię przez edycję w panelu.');
           draft.photos.push(...photos);
-          await fresh.edit({ ...carListingPayload(draft), content: null, embeds: [], attachments: [] });
+          await fresh.edit({ ...await prepareCarListingPayload(draft), content: null, embeds: [], attachments: [] });
           webCatalog.expires = 0;
           return await interaction.editReply(`Zdjęcia dodane do tej samej oferty: ${fresh.url}`);
         });
