@@ -275,6 +275,7 @@ const DM_REASONS = [
   { id: '8', key: 'pytania-auta', label: 'Pytania o samochody', emoji: '💬' },
   { id: '9', key: 'zamowienie-uslugi', label: 'Zamówienie indywidualne', emoji: '🛒' },
   { id: '10', key: 'pytania-uslugi', label: 'Pytania o usługi', emoji: '💬' },
+  { id: '11', key: 'blad-uslugi', label: 'Błąd / problem z usługą', emoji: '🐛' },
 ];
 const activeTopic = (id, offerId, reason, carOffer = false) => offerId ? `pyku:offer:${id}:${offerId}${carOffer ? ':car' : ''}` : `pyku:open:${id}${reason ? `:${reason.id}` : ''}`;
 const activeTicket = topic => /^pyku:(open|offer):(\d+)(?::(\d+))?(?::(car))?$/.exec(topic ?? '');
@@ -290,7 +291,8 @@ function reasonMenu(messageId = 'new',lang='en') {
 }
 const userLanguages=new Map(),ticketLanguages=new Map();
 const reasonEnglish={samochody:'Cars',skiny:'Weapon skins',mody:'Mods',citizeny:'Citizen packs',optymalizacja:'PC optimisation',ubrania:'FiveM clothing',
-  'blad-pojazdu':'Vehicle issue','pytania-auta':'Car questions','zamowienie-uslugi':'Custom order','pytania-uslugi':'Service questions'};
+  'blad-pojazdu':'Vehicle issue','pytania-auta':'Car questions','zamowienie-uslugi':'Custom order','pytania-uslugi':'Service questions',
+  'blad-uslugi':'Service issue / bug report'};
 const languageOf=id=>userLanguages.get(id)??'en';
 const isCarReason = reason => ['1', '7', '8'].includes(reason?.id);
 const PUBLIC_TICKET_CHANNEL = '1562451486150099085';
